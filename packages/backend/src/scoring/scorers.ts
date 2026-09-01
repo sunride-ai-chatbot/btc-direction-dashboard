@@ -9,11 +9,16 @@ import type {
   PolymarketSnapshot,
 } from '../types.js';
 
+const HORIZON_WINDOW_MINUTES: Record<Horizon, number> = { '1h': 60, '4h': 240, '24h': 1440, '72h': 1440 };
+
 /**
  * Polymarket score: weighted average of per-market directional moves.
  * Each market contributes bullishDirection * probChange (percentage points),
- * scaled so a 5pp move ≈ ±50. Weight = relevance * log10(1+liquidity).
- * High-liquidity markets therefore dominate low-volume ones.
+ * scaled so a 5pp move ≈ ±50.
+ * Weight = relevance * informationValue * log10(1+liquidity) * persistenceFactor —
+ * liquid, informative markets with smooth (non-choppy) probability paths dominate.
+ * Missing history is NEVER treated as zero change: such markets are skipped and
+ * the cold-start state is reported explicitly.
  */
 export function scorePolymarket(snapshot: PolymarketSnapshot, horizon: Horizon): ComponentScore {
   const reasons: string[] = [];
@@ -24,20 +29,42 @@ export function scorePolymarket(snapshot: PolymarketSnapshot, horizon: Horizon):
   }
 
   const changeField = horizon === '1h' ? 'probChange1h' : horizon === '4h' ? 'probChange4h' : 'probChange24h';
+  const windowMinutes = HORIZON_WINDOW_MINUTES[horizon];
+  const limitedHistory = snapshot.historyMinutes < windowMinutes;
 
   let weightedSum = 0;
   let totalWeight = 0;
-  const contributions: Array<{ title: string; contribution: number; changePp: number; liquidity: number }> = [];
+  const contributions: Array<{
+    title: string; category: string; contribution: number; changePp: number;
+    liquidity: number; infoValue: number; id: string; probability: number;
+  }> = [];
+  const categoryAgg: Record<string, { sum: number; weight: number }> = {};
 
   for (const m of snapshot.markets) {
-    const change = m[changeField];
+    let change = m[changeField];
+    // 1h cold-start mitigation only: extrapolate nothing, just use the shorter
+    // real 15m observation when the 1h delta does not exist yet.
+    if (change === null && horizon === '1h') change = m.probChange15m;
     if (change === null) continue;
-    const weight = m.relevanceScore * Math.log10(1 + Math.max(m.liquidity, m.volume));
+
+    const persistenceFactor = m.persistence === null ? 1 : 0.7 + 0.3 * m.persistence;
+    const weight = m.relevanceScore * m.informationValue * Math.log10(1 + Math.max(m.liquidity, m.volume)) * persistenceFactor;
+    if (weight <= 0) continue;
     const marketScore = clamp(m.bullishDirection * change * 100 * 10, -100, 100);
     weightedSum += marketScore * weight;
     totalWeight += weight;
-    contributions.push({ title: m.title, contribution: marketScore * weight, changePp: change * 100, liquidity: m.liquidity });
+    contributions.push({
+      id: m.id, title: m.title, category: m.category, contribution: marketScore * weight,
+      changePp: change * 100, liquidity: m.liquidity, infoValue: m.informationValue, probability: m.probability,
+    });
+    const agg = (categoryAgg[m.category] ??= { sum: 0, weight: 0 });
+    agg.sum += marketScore * weight;
+    agg.weight += weight;
   }
+
+  const historyNote = limitedHistory
+    ? `Polymarket ${horizon === '1h' ? '1h' : horizon === '4h' ? '4h' : '24h'} momentum limited — only ${snapshot.historyMinutes} minutes of history collected`
+    : null;
 
   if (totalWeight === 0) {
     return {
@@ -45,13 +72,22 @@ export function scorePolymarket(snapshot: PolymarketSnapshot, horizon: Horizon):
       weight: 0,
       available: true,
       freshness: snapshot.freshness,
-      details: { marketsTracked: snapshot.markets.length, note: 'no probability history yet for this window' },
-      reasons: [`Tracking ${snapshot.markets.length} Polymarket markets — building probability history`],
-      risks: ['Polymarket change data not yet accumulated for this horizon'],
+      details: {
+        marketsTracked: snapshot.markets.length,
+        marketsWithHistory: 0,
+        historyMinutes: snapshot.historyMinutes,
+        limitedHistory: true,
+        note: 'no probability history yet for this window — score withheld, not assumed zero',
+      },
+      reasons: [`Tracking ${snapshot.markets.length} Polymarket markets — building probability history (${snapshot.historyMinutes}m collected)`],
+      risks: [historyNote ?? 'Polymarket change data not yet accumulated for this horizon'],
     };
   }
 
   const score = clamp(weightedSum / totalWeight, -100, 100);
+  const categoryScores = Object.fromEntries(
+    Object.entries(categoryAgg).map(([cat, a]) => [cat, +(a.sum / a.weight).toFixed(1)]),
+  );
 
   contributions.sort((a, b) => Math.abs(b.contribution) - Math.abs(a.contribution));
   const top = contributions.slice(0, 3);
@@ -69,6 +105,7 @@ export function scorePolymarket(snapshot: PolymarketSnapshot, horizon: Horizon):
   if (conflicting.length > 0) {
     risks.push(`${conflicting.length} Polymarket market(s) moving against the aggregate signal`);
   }
+  if (limitedHistory && historyNote) risks.push(historyNote);
 
   return {
     score,
@@ -78,7 +115,14 @@ export function scorePolymarket(snapshot: PolymarketSnapshot, horizon: Horizon):
     details: {
       marketsTracked: snapshot.markets.length,
       marketsWithHistory: contributions.length,
-      topContributors: top.map((c) => ({ title: c.title, changePp: +c.changePp.toFixed(2) })),
+      historyMinutes: snapshot.historyMinutes,
+      limitedHistory,
+      categoryScores,
+      marketsUsed: contributions.map((c) => ({
+        id: c.id, title: c.title, category: c.category, probability: c.probability,
+        changeUsedPp: +c.changePp.toFixed(2), informationValue: +c.infoValue.toFixed(3), liquidity: c.liquidity,
+      })),
+      topContributors: top.map((c) => ({ title: c.title, changePp: +c.changePp.toFixed(2), infoValue: +c.infoValue.toFixed(2) })),
     },
     reasons,
     risks,

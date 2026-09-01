@@ -1,6 +1,6 @@
 import { useState } from 'react';
 import { useApi } from '../lib/api';
-import { HORIZONS, type Horizon, type SignalBundle, type AlertRow } from '../lib/types';
+import { HORIZONS, type Horizon, type SignalBundle, type AlertRow, type DivergencePerformance } from '../lib/types';
 import { SignalCard } from '../components/SignalCard';
 import { ComponentCard } from '../components/ComponentCard';
 
@@ -16,6 +16,7 @@ export function Dashboard() {
   const [horizon, setHorizon] = useState<Horizon>('24h');
   const { data: bundle, error } = useApi<SignalBundle>('/api/signal', 30_000);
   const { data: alertData } = useApi<{ alerts: AlertRow[] }>('/api/alerts', 60_000);
+  const { data: divergenceData } = useApi<DivergencePerformance>('/api/divergences', 120_000);
 
   if (error && !bundle) {
     return (
@@ -33,9 +34,27 @@ export function Dashboard() {
 
   const signal = bundle.signals[horizon];
   const unackedAlerts = (alertData?.alerts ?? []).filter((a) => !a.acknowledged).slice(0, 5);
+  const recentDivergences = (divergenceData?.events ?? []).filter((e) => Date.now() - e.ts < 24 * 3_600_000).slice(0, 2);
 
   return (
     <div className="mx-auto max-w-3xl">
+      {recentDivergences.length > 0 && (
+        <div className="mb-4 rounded-xl border border-sky-400/40 bg-sky-400/5 p-4">
+          <div className="text-xs font-semibold uppercase tracking-widest text-sky-400">
+            Polymarket / price divergence detected
+          </div>
+          <ul className="mt-1.5 space-y-1">
+            {recentDivergences.map((d) => (
+              <li key={d.id} className="text-sm text-slate-300">
+                {d.message}
+              </li>
+            ))}
+          </ul>
+          <div className="mt-1.5 text-xs text-slate-500">
+            Informational only — divergences are tracked for performance, they do not move the score yet.
+          </div>
+        </div>
+      )}
       <SignalCard signal={signal} />
 
       <div className="mt-6 flex justify-center gap-2">

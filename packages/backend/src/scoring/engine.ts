@@ -1,6 +1,6 @@
-import { HORIZON_WEIGHTS, SIGNAL_THRESHOLDS } from '../config.js';
+import { HORIZON_WEIGHTS, SIGNAL_THRESHOLDS, HYSTERESIS_CONFIG } from '../config.js';
 import { clamp } from '../utils/indicators.js';
-import type { ComponentScore, Horizon, HorizonSignal, LiquidityContext, SignalLabel } from '../types.js';
+import type { ComponentScore, Horizon, HorizonSignal, LiquidityContext, SignalContext, SignalLabel } from '../types.js';
 
 export interface ComponentSet {
   polymarket: ComponentScore;
@@ -14,6 +14,35 @@ export function classify(finalScore: number): SignalLabel {
   if (finalScore >= SIGNAL_THRESHOLDS.bullish) return 'BULLISH';
   if (finalScore <= SIGNAL_THRESHOLDS.bearish) return 'BEARISH';
   return 'NEUTRAL';
+}
+
+/**
+ * Hysteresis: the displayed label resists flapping on tiny score changes.
+ *  - Leaving a directional state requires the score to fall back past
+ *    threshold − exitMargin (e.g. bullish holds until score < 25−7 = 18).
+ *  - A direct BULLISH↔BEARISH flip requires |score| ≥ extremeScore; otherwise
+ *    the transition passes through NEUTRAL first.
+ * The raw label/score stay stored so stabilized vs raw can be compared later.
+ */
+export function stabilizeLabel(prevStable: SignalLabel | null, rawLabel: SignalLabel, finalScore: number): SignalLabel {
+  if (prevStable === null || prevStable === rawLabel) return rawLabel;
+  const { exitMargin, extremeScore } = HYSTERESIS_CONFIG;
+
+  if (prevStable === 'BULLISH') {
+    if (rawLabel === 'BEARISH') {
+      return finalScore <= -extremeScore ? 'BEARISH' : 'NEUTRAL';
+    }
+    // raw NEUTRAL: hold BULLISH inside the sticky band
+    return finalScore >= SIGNAL_THRESHOLDS.bullish - exitMargin ? 'BULLISH' : 'NEUTRAL';
+  }
+  if (prevStable === 'BEARISH') {
+    if (rawLabel === 'BULLISH') {
+      return finalScore >= extremeScore ? 'BULLISH' : 'NEUTRAL';
+    }
+    return finalScore <= SIGNAL_THRESHOLDS.bearish + exitMargin ? 'BEARISH' : 'NEUTRAL';
+  }
+  // prev NEUTRAL — entering a directional state uses the plain thresholds
+  return rawLabel;
 }
 
 /**
@@ -93,10 +122,41 @@ export function buildSignal(
   liquidityCtx: LiquidityContext,
   btcPrice: number | null,
   now: number,
+  prevStableLabel: SignalLabel | null = null,
+  sessionName = 'unknown',
 ): HorizonSignal {
-  const { finalScore } = composeFinalScore(components, horizon);
-  const label = classify(finalScore);
+  const { finalScore, appliedWeights } = composeFinalScore(components, horizon);
+  const rawLabel = classify(finalScore);
+  const label = stabilizeLabel(prevStableLabel, rawLabel, finalScore);
   const confidence = computeConfidence(components, finalScore, liquidityCtx);
+
+  const polyDetails = components.polymarket.details as {
+    limitedHistory?: boolean;
+    historyMinutes?: number;
+    marketsUsed?: SignalContext['polymarketMarketsUsed'];
+    categoryScores?: Record<string, number>;
+  };
+  const limitedHistory = polyDetails.limitedHistory === true;
+  const historyNote = limitedHistory
+    ? `Limited-history signal: Polymarket deltas for this horizon rest on ${polyDetails.historyMinutes ?? 0} minutes of collected snapshots`
+    : null;
+
+  const context: SignalContext = {
+    appliedWeights,
+    configuredWeights: { ...HORIZON_WEIGHTS[horizon] },
+    providerFreshness: Object.fromEntries(
+      Object.entries(components).map(([k, c]) => [k, c.freshness]),
+    ) as SignalContext['providerFreshness'],
+    unavailableProviders: Object.entries(components)
+      .filter(([, c]) => !c.available)
+      .map(([k]) => k),
+    session: sessionName,
+    polymarketMarketsUsed: polyDetails.marketsUsed ?? [],
+    polymarketCategoryScores: (polyDetails.categoryScores ?? {}) as SignalContext['polymarketCategoryScores'],
+    technicalValues: components.technical.details,
+    macroValues: components.macro.details,
+    etfValues: components.etf.details,
+  };
 
   const weights = HORIZON_WEIGHTS[horizon];
   const ranked = (Object.entries(components) as Array<[keyof ComponentSet, ComponentScore]>)
@@ -127,6 +187,7 @@ export function buildSignal(
   return {
     horizon,
     label,
+    rawLabel,
     finalScore: +finalScore.toFixed(1),
     confidence,
     reasons,
@@ -134,5 +195,8 @@ export function buildSignal(
     components,
     btcPrice,
     timestamp: now,
+    limitedHistory,
+    historyNote,
+    context,
   };
 }

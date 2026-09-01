@@ -1,6 +1,6 @@
 import { fetchJson } from '../utils/fetchJson.js';
 import { clamp } from '../utils/indicators.js';
-import { POLYMARKET_CONFIG, FRESHNESS_LIMITS_MS } from '../config.js';
+import { POLYMARKET_CONFIG, FRESHNESS_LIMITS_MS, INFO_VALUE_CONFIG } from '../config.js';
 import type { PolymarketCategory, PolymarketMarket, PolymarketSnapshot } from '../types.js';
 import type { SignalDatabase } from '../db/database.js';
 
@@ -47,16 +47,25 @@ export class GammaPolymarketProvider implements PolymarketProvider {
       );
 
       for (const m of markets) {
+        m.probChange15m = this.change(m.id, m.probability, now, 0.25, 6 * 60_000);
         m.probChange1h = this.change(m.id, m.probability, now, 1);
         m.probChange4h = this.change(m.id, m.probability, now, 4);
         m.probChange24h = this.change(m.id, m.probability, now, 24);
+        this.attachMomentum(m, now);
+        m.informationValue = informationValue(m, now);
       }
 
+      const earliest = this.db.getEarliestSnapshotTs();
       const snapshot: PolymarketSnapshot = {
-        markets: markets.sort((a, b) => b.relevanceScore * Math.log10(1 + b.liquidity) - a.relevanceScore * Math.log10(1 + a.liquidity)),
+        markets: markets.sort(
+          (a, b) =>
+            b.relevanceScore * b.informationValue * Math.log10(1 + b.liquidity) -
+            a.relevanceScore * a.informationValue * Math.log10(1 + a.liquidity),
+        ),
         source: 'polymarket-gamma',
         timestamp: now,
         freshness: 'fresh',
+        historyMinutes: earliest === null ? 0 : Math.floor((now - earliest) / 60_000),
       };
       this.lastGood = snapshot;
       return snapshot;
@@ -65,7 +74,7 @@ export class GammaPolymarketProvider implements PolymarketProvider {
         const age = now - this.lastGood.timestamp;
         return { ...this.lastGood, freshness: age > FRESHNESS_LIMITS_MS.polymarket ? 'unavailable' : 'stale' };
       }
-      return { markets: [], source: 'polymarket-gamma', timestamp: now, freshness: 'unavailable' };
+      return { markets: [], source: 'polymarket-gamma', timestamp: now, freshness: 'unavailable', historyMinutes: 0 };
     }
   }
 
@@ -108,6 +117,7 @@ export class GammaPolymarketProvider implements PolymarketProvider {
       id: raw.id,
       title: raw.question,
       probability,
+      probChange15m: null,
       probChange1h: null,
       probChange4h: null,
       probChange24h: null,
@@ -118,15 +128,80 @@ export class GammaPolymarketProvider implements PolymarketProvider {
       category,
       bullishDirection: direction,
       lastUpdated: now,
+      informationValue: 0,
+      velocityPpPerHour: null,
+      persistence: null,
     };
   }
 
-  private change(marketId: string, current: number, now: number, hoursAgo: number): number | null {
-    const tolerance = Math.max(10 * 60_000, hoursAgo * 60_000 * 0.25);
+  private change(marketId: string, current: number, now: number, hoursAgo: number, toleranceOverrideMs?: number): number | null {
+    const tolerance = toleranceOverrideMs ?? Math.max(10 * 60_000, hoursAgo * 60_000 * 0.25);
     const past = this.db.getProbabilityAt(marketId, now - hoursAgo * 3_600_000, tolerance);
     if (past === null) return null;
     return current - past;
   }
+
+  /** Velocity (pp/hour over last hour) and persistence (net/path ratio) from our snapshot series. */
+  private attachMomentum(m: PolymarketMarket, now: number): void {
+    const series = this.db.getProbabilitySeries(m.id, now - 3_600_000 - 5 * 60_000);
+    if (series.length < 2) return;
+    const first = series[0];
+    const last = series[series.length - 1];
+    const hours = (last.ts - first.ts) / 3_600_000;
+    if (hours > 0.25) {
+      m.velocityPpPerHour = ((last.probability - first.probability) * 100) / hours;
+    }
+    if (series.length >= 3) {
+      m.persistence = pathPersistence(series.map((s) => s.probability));
+    }
+  }
+}
+
+/**
+ * Persistence of a probability path: |net move| / total path length.
+ * 42→43→45→50 (one-way drift) ≈ 1.0; 42→50→43 (spike & revert) ≈ 0.07.
+ * Returns null when the path barely moved (nothing to characterize).
+ */
+export function pathPersistence(path: number[]): number | null {
+  if (path.length < 3) return null;
+  let travelled = 0;
+  for (let i = 1; i < path.length; i++) travelled += Math.abs(path[i] - path[i - 1]);
+  if (travelled < 0.002) return null;
+  const net = Math.abs(path[path.length - 1] - path[0]);
+  return clamp(net / travelled, 0, 1);
+}
+
+/**
+ * marketInformationValue 0..1 — how much usable directional information a market
+ * carries. Blends:
+ *  - extremeness: 4p(1-p) — peaks at 50/50, collapses near 0%/100% so nearly
+ *    resolved contracts cannot dominate;
+ *  - depth: log-scaled liquidity/volume;
+ *  - time to resolution: markets settling within ~2 days decay (settlement mechanics);
+ *  - recent activity: a market whose probability has not moved at all lately is dampened.
+ */
+export function informationValue(
+  m: Pick<PolymarketMarket, 'probability' | 'liquidity' | 'volume' | 'expirationDate' | 'probChange15m' | 'probChange1h' | 'probChange4h'>,
+  now: number,
+): number {
+  const p = m.probability;
+  const extremeness = Math.pow(4 * p * (1 - p), 0.6);
+
+  const depth = 0.3 + 0.7 * clamp(Math.log10(1 + Math.max(m.liquidity, m.volume)) / 6, 0, 1);
+
+  let timeFactor = 0.9;
+  if (m.expirationDate) {
+    const daysLeft = (Date.parse(m.expirationDate) - now) / 86_400_000;
+    if (Number.isFinite(daysLeft)) {
+      timeFactor = clamp(daysLeft / INFO_VALUE_CONFIG.minUsefulDays, 0.3, 1);
+    }
+  }
+
+  const changes = [m.probChange15m, m.probChange1h, m.probChange4h].filter((c): c is number => c !== null);
+  const activityFactor =
+    changes.length === 0 ? 0.85 : changes.some((c) => Math.abs(c) > 0.001) ? 1 : 0.6;
+
+  return clamp(extremeness * depth * timeFactor * activityFactor, 0, 1);
 }
 
 export function categorize(title: string): PolymarketCategory | null {
@@ -200,8 +275,8 @@ function parseYesPrice(raw: GammaMarket): number | null {
       return null;
     }
     const p = Number.parseFloat(prices[idx]);
-    // Near-resolved markets (<3% or >97%) carry no usable directional information.
-    if (!Number.isFinite(p) || p < 0.03 || p > 0.97) return null;
+    // Hard floor only for settlement noise; graded penalties live in informationValue.
+    if (!Number.isFinite(p) || p < 0.015 || p > 0.985) return null;
     return p;
   } catch {
     return null;

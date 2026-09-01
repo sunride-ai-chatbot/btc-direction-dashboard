@@ -17,6 +17,7 @@ export interface ComponentScore {
 export interface HorizonSignal {
   horizon: Horizon;
   label: SignalLabel;
+  rawLabel: SignalLabel;
   finalScore: number;
   confidence: number;
   reasons: string[];
@@ -30,6 +31,8 @@ export interface HorizonSignal {
   };
   btcPrice: number | null;
   timestamp: number;
+  limitedHistory: boolean;
+  historyNote: string | null;
 }
 
 export interface SignalBundle {
@@ -41,6 +44,7 @@ export interface PolymarketMarket {
   id: string;
   title: string;
   probability: number;
+  probChange15m: number | null;
   probChange1h: number | null;
   probChange4h: number | null;
   probChange24h: number | null;
@@ -50,6 +54,9 @@ export interface PolymarketMarket {
   relevanceScore: number;
   category: string;
   bullishDirection: 1 | -1;
+  informationValue: number;
+  velocityPpPerHour: number | null;
+  persistence: number | null;
 }
 
 export interface PolymarketSnapshot {
@@ -57,6 +64,7 @@ export interface PolymarketSnapshot {
   source: string;
   timestamp: number;
   freshness: Freshness;
+  historyMinutes: number;
 }
 
 export interface HistoryRow {
@@ -71,6 +79,7 @@ export interface HistoryRow {
   liquidity_score: number;
   final_score: number;
   label: SignalLabel;
+  raw_label: SignalLabel | null;
   confidence: number;
   reasons: string[];
   risks: string[];
@@ -81,18 +90,78 @@ export interface EvaluationBucket {
   total: number;
   correct: number;
   accuracy: number | null;
+  avgConfidence: number | null;
   avgReturn: number | null;
 }
 
-export interface EvaluationReport {
-  horizon: Horizon;
+export interface HorizonEvaluationReport {
+  horizon: Horizon | 'overall';
   totalEvaluated: number;
+  reliable: boolean;
   directionalAccuracy: number | null;
+  rawDirectionalAccuracy: number | null;
   bullishAccuracy: number | null;
   bearishAccuracy: number | null;
   neutralAccuracy: number | null;
-  avgReturnAfterSignal: number | null;
+  avgReturnAfterBullish: number | null;
+  avgReturnAfterBearish: number | null;
   byConfidenceBucket: EvaluationBucket[];
+  bySession: Array<{ session: string; total: number; correct: number; accuracy: number | null }>;
+}
+
+export interface EvaluationReportPayload {
+  minReliableSamples: number;
+  overall: HorizonEvaluationReport;
+  horizons: HorizonEvaluationReport[];
+}
+
+export interface ComponentAttribution {
+  component: string;
+  samples: number;
+  directionAgreementPct: number | null;
+  avgScoreWhenCorrect: number | null;
+  avgScoreWhenIncorrect: number | null;
+}
+
+export interface AttributionReport {
+  totalEvaluated: number;
+  reliable: boolean;
+  components: ComponentAttribution[];
+  polymarketCategories: ComponentAttribution[];
+}
+
+export interface DivergencePerformance {
+  events: Array<{
+    id: number;
+    ts: number;
+    kind: string;
+    message: string;
+    btc_change_pct: number;
+    poly_shift_score: number;
+    outcome4h: number | null;
+    outcome24h: number | null;
+  }>;
+  summary: Array<{ kind: string; total: number; resolved: number; agreeing: number; agreementPct: number | null }>;
+}
+
+export interface ProviderHealth {
+  name: string;
+  status: 'LIVE' | 'DEGRADED' | 'DOWN' | 'UNAVAILABLE' | 'DAILY' | 'STALE';
+  lastSuccessTs: number | null;
+  lastLatencyMs: number | null;
+  consecutiveFailures: number;
+  totalFailures: number;
+  freshness: Freshness;
+  note: string | null;
+}
+
+export interface HealthPayload {
+  processStartTs: number;
+  serverTime: number;
+  providers: ProviderHealth[];
+  evaluationsStored: number;
+  neutralThresholdsPct: Record<Horizon, number>;
+  evaluationJobMs: number;
 }
 
 export interface AlertRow {

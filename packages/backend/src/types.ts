@@ -18,6 +18,7 @@ export interface PolymarketMarket {
   id: string;
   title: string;
   probability: number;
+  probChange15m: number | null;
   probChange1h: number | null;
   probChange4h: number | null;
   probChange24h: number | null;
@@ -28,6 +29,12 @@ export interface PolymarketMarket {
   category: PolymarketCategory;
   bullishDirection: 1 | -1;
   lastUpdated: number;
+  /** 0..1 — how much usable directional information this market carries right now. */
+  informationValue: number;
+  /** Probability velocity over the last hour, in percentage points per hour (null: no history). */
+  velocityPpPerHour: number | null;
+  /** 0..1 — how consistent recent probability steps are (1 = smooth one-way drift). */
+  persistence: number | null;
 }
 
 export interface PolymarketSnapshot {
@@ -35,6 +42,8 @@ export interface PolymarketSnapshot {
   source: string;
   timestamp: number;
   freshness: Freshness;
+  /** How long we have been collecting snapshots, in minutes (drives cold-start labeling). */
+  historyMinutes: number;
 }
 
 export interface BitcoinTechnicals {
@@ -100,7 +109,10 @@ export interface ComponentScore {
 
 export interface HorizonSignal {
   horizon: Horizon;
+  /** Stabilized label (hysteresis applied) — what the UI shows. */
   label: SignalLabel;
+  /** Label straight from thresholds, before hysteresis. */
+  rawLabel: SignalLabel;
   finalScore: number;
   confidence: number;
   reasons: string[];
@@ -114,6 +126,32 @@ export interface HorizonSignal {
   };
   btcPrice: number | null;
   timestamp: number;
+  /** True while probability history is too short for this horizon's Polymarket deltas. */
+  limitedHistory: boolean;
+  historyNote: string | null;
+  /** Everything needed to reproduce why this signal was generated (persisted as JSON). */
+  context: SignalContext;
+}
+
+export interface SignalContext {
+  appliedWeights: Record<string, number>;
+  configuredWeights: Record<string, number>;
+  providerFreshness: Record<string, Freshness>;
+  unavailableProviders: string[];
+  session: string;
+  polymarketMarketsUsed: Array<{
+    id: string;
+    title: string;
+    category: PolymarketCategory;
+    probability: number;
+    changeUsedPp: number | null;
+    informationValue: number;
+    liquidity: number;
+  }>;
+  polymarketCategoryScores: Partial<Record<PolymarketCategory, number>>;
+  technicalValues: Record<string, unknown>;
+  macroValues: Record<string, unknown>;
+  etfValues: Record<string, unknown>;
 }
 
 export interface SignalBundle {
@@ -151,16 +189,49 @@ export interface EvaluationBucket {
   total: number;
   correct: number;
   accuracy: number | null;
+  avgConfidence: number | null;
   avgReturn: number | null;
 }
 
-export interface EvaluationReport {
+export type MarketSession = 'Asia' | 'Europe' | 'EU/US overlap' | 'US' | 'Overnight';
+
+export interface StoredEvaluation {
+  id: number;
+  signal_id: number;
   horizon: Horizon;
-  totalEvaluated: number;
-  directionalAccuracy: number | null;
-  bullishAccuracy: number | null;
-  bearishAccuracy: number | null;
-  neutralAccuracy: number | null;
-  avgReturnAfterSignal: number | null;
-  byConfidenceBucket: EvaluationBucket[];
+  signal_ts: number;
+  evaluated_ts: number;
+  entry_price: number;
+  future_price: number;
+  abs_change: number;
+  pct_change: number;
+  predicted_label: SignalLabel;
+  raw_label: SignalLabel;
+  actual_direction: 'up' | 'down' | 'flat';
+  correct: number;
+  raw_correct: number;
+  confidence: number;
+  final_score: number;
+  session: string;
+}
+
+export interface DivergenceEvent {
+  id: number;
+  ts: number;
+  kind: 'bullish-divergence' | 'bearish-divergence';
+  btc_change_pct: number;
+  poly_shift_score: number;
+  window_hours: number;
+  message: string;
+}
+
+export interface ProviderHealth {
+  name: string;
+  status: 'LIVE' | 'DEGRADED' | 'DOWN' | 'UNAVAILABLE' | 'DAILY' | 'STALE';
+  lastSuccessTs: number | null;
+  lastLatencyMs: number | null;
+  consecutiveFailures: number;
+  totalFailures: number;
+  freshness: Freshness;
+  note: string | null;
 }

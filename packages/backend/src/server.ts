@@ -6,13 +6,18 @@ import { BinanceBitcoinProvider } from './providers/bitcoin.js';
 import { ManualFileEtfProvider } from './providers/etf.js';
 import { FredMacroProvider } from './providers/macro.js';
 import { runPipeline, type PipelineProviders } from './scoring/pipeline.js';
-import { evaluateHorizon } from './scoring/evaluation.js';
+import { runEvaluationPass } from './scoring/evaluator.js';
+import { buildAttributionReport, buildDivergenceReport, buildEvaluationReport } from './scoring/reports.js';
+import { detectDivergence } from './scoring/divergence.js';
 import { AlertEngine, DatabaseAlertSink } from './alerts/engine.js';
 import { cached } from './utils/cached.js';
-import { REFRESH_INTERVALS_MS, SERVER_CONFIG, HORIZON_WEIGHTS } from './config.js';
-import { HORIZONS, type Horizon, type SignalBundle, type PolymarketSnapshot } from './types.js';
+import { HealthRegistry } from './utils/health.js';
+import { toCsv } from './utils/csv.js';
+import { DIVERGENCE_CONFIG, EVALUATION_CONFIG, HORIZON_WEIGHTS, NEUTRAL_THRESHOLD_PCT, REFRESH_INTERVALS_MS, SERVER_CONFIG } from './config.js';
+import { HORIZONS, type Horizon, type SignalBundle, type SignalLabel, type PolymarketSnapshot } from './types.js';
 
 const db = new SignalDatabase(SERVER_CONFIG.dbPath);
+const health = new HealthRegistry();
 
 const polymarketProvider = new GammaPolymarketProvider(db);
 const bitcoinProvider = new BinanceBitcoinProvider();
@@ -20,10 +25,10 @@ const etfProvider = new ManualFileEtfProvider();
 const macroProvider = new FredMacroProvider();
 
 const providers: PipelineProviders = {
-  polymarket: { fetchSnapshot: cached(() => polymarketProvider.fetchSnapshot(), REFRESH_INTERVALS_MS.polymarket) },
-  bitcoin: { fetchTechnicals: cached(() => bitcoinProvider.fetchTechnicals(), REFRESH_INTERVALS_MS.btcPrice) },
-  etf: { fetchFlows: cached(() => etfProvider.fetchFlows(), REFRESH_INTERVALS_MS.etf) },
-  macro: { fetchMacro: cached(() => macroProvider.fetchMacro(), REFRESH_INTERVALS_MS.macro) },
+  polymarket: { fetchSnapshot: cached(health.instrument('polymarket', () => polymarketProvider.fetchSnapshot()), REFRESH_INTERVALS_MS.polymarket) },
+  bitcoin: { fetchTechnicals: cached(health.instrument('btc-price', () => bitcoinProvider.fetchTechnicals()), REFRESH_INTERVALS_MS.btcPrice) },
+  etf: { fetchFlows: cached(health.instrument('etf', () => etfProvider.fetchFlows()), REFRESH_INTERVALS_MS.etf) },
+  macro: { fetchMacro: cached(health.instrument('macro', () => macroProvider.fetchMacro()), REFRESH_INTERVALS_MS.macro) },
 };
 
 const alertEngine = new AlertEngine();
@@ -31,30 +36,48 @@ alertEngine.addSink(new DatabaseAlertSink(db));
 
 let latestBundle: SignalBundle | null = null;
 let latestPolySnapshot: PolymarketSnapshot | null = null;
-let lastPersistTs = 0;
+// Survive restarts: hysteresis continues from the last persisted labels and the
+// persist cadence continues from the last stored signal timestamp.
+let stableLabels: Partial<Record<Horizon, SignalLabel>> = db.getLatestLabels();
+let lastPersistTs = db.getMaxSignalTs();
 const PERSIST_INTERVAL_MS = 5 * 60_000;
 
 async function computeSignals(): Promise<void> {
   try {
-    const { bundle, polySnapshot, tech } = await runPipeline(providers);
+    const { bundle, polySnapshot, tech } = await runPipeline(providers, stableLabels);
     latestBundle = bundle;
     latestPolySnapshot = polySnapshot;
+    for (const horizon of HORIZONS) stableLabels[horizon] = bundle.signals[horizon].label;
 
     if (tech.freshness === 'fresh' && tech.price > 0) {
       db.insertBtcPrice(bundle.generatedAt, tech.price, tech.volume24h);
     }
 
-    const shouldPersist = bundle.generatedAt - lastPersistTs >= PERSIST_INTERVAL_MS;
-    if (shouldPersist) {
+    if (bundle.generatedAt - lastPersistTs >= PERSIST_INTERVAL_MS) {
       for (const horizon of HORIZONS) {
         db.insertSignal(bundle.signals[horizon]);
       }
       lastPersistTs = bundle.generatedAt;
     }
 
+    const divergence = detectDivergence(polySnapshot, tech, bundle.generatedAt);
+    if (divergence && !db.hasRecentDivergence(divergence.kind, bundle.generatedAt - DIVERGENCE_CONFIG.dedupWindowMs)) {
+      db.insertDivergence(divergence);
+      db.insertAlert('divergence', divergence.message, 'warning', null, divergence.ts);
+    }
+
     alertEngine.evaluate(bundle, polySnapshot, tech);
   } catch (err) {
     console.error('[pipeline] compute failed:', err);
+  }
+}
+
+function evaluateDueSignals(): void {
+  try {
+    const { evaluated } = runEvaluationPass(db);
+    if (evaluated > 0) console.log(`[evaluator] evaluated ${evaluated} signal(s); total ${db.countEvaluations()}`);
+  } catch (err) {
+    console.error('[evaluator] pass failed:', err);
   }
 }
 
@@ -83,12 +106,24 @@ app.get<{ Querystring: { horizon?: string; limit?: string } }>('/api/history', a
       risks: JSON.parse(r.risks_json),
       reasons_json: undefined,
       risks_json: undefined,
+      context_json: undefined,
     })),
   };
 });
 
-app.get('/api/evaluation', async () => {
-  return { reports: HORIZONS.map((h) => evaluateHorizon(db, h)) };
+app.get('/api/evaluation', async () => buildEvaluationReport(db));
+app.get('/api/attribution', async () => buildAttributionReport(db));
+app.get('/api/divergences', async () => buildDivergenceReport(db));
+
+app.get('/api/health', async () => {
+  const snap = health.snapshot({ polymarket: 'realtime', 'btc-price': 'realtime', macro: 'daily', etf: 'manual' });
+  return {
+    ...snap,
+    serverTime: Date.now(),
+    evaluationsStored: db.countEvaluations(),
+    neutralThresholdsPct: NEUTRAL_THRESHOLD_PCT,
+    evaluationJobMs: EVALUATION_CONFIG.jobIntervalMs,
+  };
 });
 
 app.get('/api/alerts', async () => {
@@ -118,9 +153,25 @@ app.get('/api/status', async () => {
   };
 });
 
+const EXPORTS: Record<string, () => Array<Record<string, unknown>>> = {
+  'signals.csv': () => db.exportSignalRows(),
+  'evaluations.csv': () => db.exportEvaluationRows(),
+  'polymarket_snapshots.csv': () => db.exportSnapshotRows(),
+};
+
+app.get<{ Params: { file: string } }>('/api/export/:file', async (req, reply) => {
+  const exporter = EXPORTS[req.params.file];
+  if (!exporter) return reply.code(404).send({ error: 'Unknown export. Available: ' + Object.keys(EXPORTS).join(', ') });
+  reply.header('content-type', 'text/csv; charset=utf-8');
+  reply.header('content-disposition', `attachment; filename="${req.params.file}"`);
+  return toCsv(exporter());
+});
+
 async function main(): Promise<void> {
   await computeSignals();
+  evaluateDueSignals();
   setInterval(computeSignals, REFRESH_INTERVALS_MS.signalCompute);
+  setInterval(evaluateDueSignals, EVALUATION_CONFIG.jobIntervalMs);
   setInterval(() => db.pruneOldData(30 * 24 * 3_600_000), 6 * 3_600_000);
 
   await app.listen({ port: SERVER_CONFIG.port, host: SERVER_CONFIG.host });

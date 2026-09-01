@@ -3,14 +3,16 @@ import { Dashboard } from './pages/Dashboard';
 import { PolymarketPage } from './pages/PolymarketPage';
 import { HistoryPage } from './pages/HistoryPage';
 import { EvaluationPage } from './pages/EvaluationPage';
+import { HealthPage } from './pages/HealthPage';
 
-type Page = 'dashboard' | 'polymarket' | 'history' | 'evaluation';
+type Page = 'dashboard' | 'polymarket' | 'history' | 'evaluation' | 'health';
 
 const NAV: Array<{ id: Page; label: string }> = [
   { id: 'dashboard', label: 'Signal' },
   { id: 'polymarket', label: 'Polymarket' },
   { id: 'history', label: 'History' },
   { id: 'evaluation', label: 'Evaluation' },
+  { id: 'health', label: 'Health' },
 ];
 
 export default function App() {
@@ -42,6 +44,7 @@ export default function App() {
         {page === 'polymarket' && <PolymarketPage />}
         {page === 'history' && <HistoryPage />}
         {page === 'evaluation' && <EvaluationPage />}
+        {page === 'health' && <HealthPage />}
       </main>
     </div>
   );

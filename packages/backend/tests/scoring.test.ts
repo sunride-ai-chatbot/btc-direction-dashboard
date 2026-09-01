@@ -172,7 +172,7 @@ describe('polymarket relevance + categorization', () => {
 
 describe('unavailable providers', () => {
   it('polymarket scorer flags unavailable snapshot', () => {
-    const snapshot: PolymarketSnapshot = { markets: [], source: 'x', timestamp: 0, freshness: 'unavailable' };
+    const snapshot: PolymarketSnapshot = { markets: [], source: 'x', timestamp: 0, freshness: 'unavailable', historyMinutes: 0 };
     const result = scorePolymarket(snapshot, '24h');
     expect(result.available).toBe(false);
     expect(result.score).toBe(0);

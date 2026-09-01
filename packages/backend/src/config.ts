@@ -67,9 +67,62 @@ export const SERVER_CONFIG = {
   dbPath: process.env.DB_PATH ?? './data/signals.db',
 };
 
+/**
+ * Evaluation: a realized move smaller than the horizon's band (in %) counts as
+ * "flat" — a BULLISH/BEARISH call is only correct beyond it, and NEUTRAL is
+ * correct inside it.
+ */
+export const NEUTRAL_THRESHOLD_PCT: Record<Horizon, number> = {
+  '1h': envFloat('NEUTRAL_PCT_1H', 0.15),
+  '4h': envFloat('NEUTRAL_PCT_4H', 0.35),
+  '24h': envFloat('NEUTRAL_PCT_24H', 0.8),
+  '72h': envFloat('NEUTRAL_PCT_72H', 1.5),
+};
+
+/** How close to the target horizon a future price must be to count (fraction of horizon). */
+export const EVALUATION_CONFIG = {
+  jobIntervalMs: envInt('EVAL_JOB_MS', 5 * 60_000),
+  priceToleranceFraction: 0.1,
+  minPriceToleranceMs: 10 * 60_000,
+};
+
+/**
+ * Label hysteresis. Raw label comes straight from SIGNAL_THRESHOLDS; the displayed
+ * (stabilized) label additionally requires:
+ *  - crossing threshold + exitMargin to LEAVE a directional state, and
+ *  - a direct BULLISH<->BEARISH flip only when the score reaches extremeScore.
+ */
+export const HYSTERESIS_CONFIG = {
+  exitMargin: 7,
+  extremeScore: 45,
+};
+
+/** Polymarket information value + momentum knobs. */
+export const INFO_VALUE_CONFIG = {
+  minUsefulDays: 2,
+  fullValueDays: 30,
+  activityWindowMs: 6 * 3_600_000,
+  velocityFullPpPerHour: 2,
+};
+
+/** Divergence detection between BTC price and aggregate Polymarket direction. */
+export const DIVERGENCE_CONFIG = {
+  windowHours: 4,
+  minPriceMovePct: 0.6,
+  minPolyShiftScore: 8,
+  dedupWindowMs: 2 * 3_600_000,
+};
+
 function envInt(name: string, fallback: number): number {
   const raw = process.env[name];
   if (!raw) return fallback;
   const parsed = Number.parseInt(raw, 10);
+  return Number.isFinite(parsed) ? parsed : fallback;
+}
+
+function envFloat(name: string, fallback: number): number {
+  const raw = process.env[name];
+  if (!raw) return fallback;
+  const parsed = Number.parseFloat(raw);
   return Number.isFinite(parsed) ? parsed : fallback;
 }

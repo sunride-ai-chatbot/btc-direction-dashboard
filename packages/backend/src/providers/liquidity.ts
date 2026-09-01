@@ -38,6 +38,20 @@ export function sessionFor(israelHour: number): { name: string; quality: number 
   return { name: 'Overnight (thin liquidity)', quality: 0.4 };
 }
 
+/**
+ * Canonical session category for a UTC timestamp, derived via Asia/Jerusalem local
+ * hour (DST-correct). Used to group evaluation results — stored on evaluations so
+ * accuracy-by-session can be measured, never assumed.
+ */
+export function classifySession(utcTs: number): 'Asia' | 'Europe' | 'EU/US overlap' | 'US' | 'Overnight' {
+  const hour = getIsraelHour(new Date(utcTs));
+  if (hour >= 17 && hour < 19) return 'EU/US overlap';
+  if (hour >= 19 && hour < 23) return 'US';
+  if (hour >= 10 && hour < 17) return 'Europe';
+  if (hour >= 3 && hour < 10) return 'Asia';
+  return 'Overnight';
+}
+
 /** Volume quality: current 24h volume relative to what's typical. 0..1 */
 export function computeVolumeQuality(volume24h: number | null, volumeChange24h: number | null): number {
   if (volume24h === null) return 0.5;

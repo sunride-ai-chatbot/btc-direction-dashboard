@@ -36,6 +36,8 @@ No API keys are required. Optional overrides (all have sane defaults):
 | `REFRESH_POLYMARKET_MS` | `300000` | Polymarket refresh |
 | `REFRESH_MACRO_MS` | `900000` | macro refresh |
 | `REFRESH_ETF_MS` | `3600000` | ETF file re-read |
+| `EVAL_JOB_MS` | `300000` | evaluation job cadence |
+| `NEUTRAL_PCT_1H/4H/24H/72H` | `0.15/0.35/0.8/1.5` | neutral movement bands (%) for evaluation |
 | `ETF_FLOWS_FILE` | `./data/etf-flows.json` | manual ETF flow data (see below) |
 | `MACRO_EVENTS_FILE` | `./data/macro-events.json` | editable macro event calendar |
 | `POLYMARKET_GAMMA_URL` | gamma-api.polymarket.com | Polymarket API base |
@@ -67,9 +69,21 @@ A dead provider degrades confidence and is labeled in the UI; it never crashes t
 4. **Confidence** is computed separately from: signal strength, agreement between independent
    components, provider availability + freshness, and session/volume quality. Clamped to 5–95 —
    the model never claims certainty. It is a *model confidence score*, not a statistical probability.
-5. Signals are persisted every 5 minutes; the **Evaluation** page compares each stored signal
-   against the actual BTC price after its horizon elapsed (directional accuracy, per-label accuracy,
-   accuracy by confidence bucket, average return).
+5. Signals are persisted every 5 minutes with a full reproducibility context (weights used,
+   provider freshness, the exact Polymarket markets and deltas that contributed). A scheduled
+   evaluator compares each stored signal against the actual BTC price once its horizon elapses,
+   using configurable per-horizon neutral bands (±0.15% @1h … ±1.5% @72h) so tiny moves count
+   as flat. The **Evaluation** page shows directional/per-label accuracy, win rate by confidence
+   bucket (0–49/50–59/60–69/70–79/80+ — to test whether higher confidence ⇒ higher accuracy),
+   accuracy by market session, component/subcategory attribution, and divergence performance.
+   The displayed label uses hysteresis (no BULLISH→BEARISH flapping); the raw label is stored
+   and evaluated alongside it. **Weights and confidence are never auto-tuned from this data** —
+   results are flagged unreliable below 50 evaluations per horizon.
+6. **Polymarket / price divergences** (price falling while prediction markets turn bullish, or
+   vice versa) are detected, displayed, and performance-tracked — but do not move the score.
+7. Each market carries a `marketInformationValue` (0–1: probability distance from 0%/100%,
+   depth, time to resolution, recent activity) so near-resolved contracts cannot dominate, plus
+   15-minute momentum, probability velocity, and path persistence from self-collected snapshots.
 
 Explanations are deterministic templates filled from actual collected data — no LLM is used or
 required, and the numeric engine alone decides direction.

@@ -21,12 +21,26 @@ export function SignalCard({ signal }: { signal: HorizonSignal }) {
         {style.emoji} {signal.label}
       </div>
       <div className="mt-3 text-lg text-slate-300">
-        Confidence <span className="font-mono font-semibold">{signal.confidence}%</span>
+        <span className="text-sm uppercase tracking-wide text-slate-500">Model confidence</span>{' '}
+        <span className="font-mono font-semibold">{signal.confidence}%</span>
       </div>
       <div className="mt-1 text-sm uppercase tracking-widest text-slate-500">
         {signal.horizon} signal · score {signal.finalScore > 0 ? '+' : ''}
         {signal.finalScore}
+        {signal.rawLabel !== signal.label && (
+          <span className="ml-2 normal-case tracking-normal text-slate-600" title="Hysteresis is smoothing the displayed label">
+            (raw: {signal.rawLabel.toLowerCase()})
+          </span>
+        )}
       </div>
+      {signal.limitedHistory && (
+        <div
+          className="mx-auto mt-3 inline-block rounded-full border border-flat/40 bg-flat/10 px-3 py-1 text-xs font-semibold text-flat"
+          title={signal.historyNote ?? undefined}
+        >
+          LIMITED HISTORY SIGNAL
+        </div>
+      )}
       <div className="mt-4 text-xs text-slate-500">Updated {timeAgo(signal.timestamp)}</div>
 
       <div className="mt-6 border-t border-border pt-5 text-left">

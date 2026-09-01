@@ -6,29 +6,33 @@ import type { BitcoinTechnicals, EtfFlows, MacroData, PolymarketSnapshot } from 
 const now = Date.now();
 
 function fakePolymarket(freshness: 'fresh' | 'unavailable' = 'fresh'): PolymarketSnapshot {
-  if (freshness === 'unavailable') return { markets: [], source: 'fake', timestamp: now, freshness };
+  if (freshness === 'unavailable') return { markets: [], source: 'fake', timestamp: now, freshness, historyMinutes: 0 };
   return {
     source: 'fake',
     timestamp: now,
     freshness,
+    historyMinutes: 2000,
     markets: [
       {
         id: 'm1', title: 'Will Bitcoin reach $150k by Dec 31?', probability: 0.42,
-        probChange1h: 0.01, probChange4h: 0.03, probChange24h: 0.08,
+        probChange15m: 0.003, probChange1h: 0.01, probChange4h: 0.03, probChange24h: 0.08,
         volume: 2_000_000, liquidity: 500_000, expirationDate: '2026-12-31',
         relevanceScore: 1.0, category: 'btc-direct', bullishDirection: 1, lastUpdated: now,
+        informationValue: 0.9, velocityPpPerHour: 1.0, persistence: 0.8,
       },
       {
         id: 'm2', title: 'Will the Fed cut rates in October?', probability: 0.7,
-        probChange1h: 0.005, probChange4h: 0.01, probChange24h: 0.04,
+        probChange15m: 0.001, probChange1h: 0.005, probChange4h: 0.01, probChange24h: 0.04,
         volume: 900_000, liquidity: 300_000, expirationDate: '2026-10-30',
         relevanceScore: 0.6, category: 'fed', bullishDirection: 1, lastUpdated: now,
+        informationValue: 0.7, velocityPpPerHour: 0.5, persistence: 0.6,
       },
       {
         id: 'm3', title: 'Will Bitcoin dip to $60k in 2026?', probability: 0.15,
-        probChange1h: -0.002, probChange4h: -0.01, probChange24h: -0.03,
+        probChange15m: -0.001, probChange1h: -0.002, probChange4h: -0.01, probChange24h: -0.03,
         volume: 400_000, liquidity: 150_000, expirationDate: '2026-12-31',
         relevanceScore: 1.0, category: 'btc-direct', bullishDirection: -1, lastUpdated: now,
+        informationValue: 0.5, velocityPpPerHour: -0.2, persistence: 0.5,
       },
     ],
   };

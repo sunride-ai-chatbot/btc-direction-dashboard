@@ -69,3 +69,66 @@ Key judgment calls made while building the MVP, so they can be revisited deliber
     Telegram/email/push can be added by implementing one method. Alerts dedupe within 1h.
 19. **No LLM anywhere** — explanations are deterministic templates filled with collected values,
     per the "must work without an AI key" requirement.
+
+# Phase 2 — validation & calibration (2026-09-01)
+
+## Persistence & evaluation
+
+20. **Schema is now versioned** via `PRAGMA user_version` (v2). Migrations run automatically on
+    startup; the Phase 1 DB migrated in place with zero row loss. `signals` gained `raw_label`
+    and `context_json` — the context stores applied+configured weights, provider freshness,
+    unavailable providers, session, the exact Polymarket markets used (with the pp-change and
+    information value each contributed), technical/macro/ETF values. A signal is reproducible
+    from its row alone.
+21. **Evaluation is a scheduled job** (every 5 min, `EVAL_JOB_MS`), not an on-demand report:
+    outcomes are written once to an `evaluations` table (UNIQUE per signal). Future prices come
+    only from our own stored `btc_price_history`; if no price exists within tolerance
+    (max(10 min, 10% of horizon)) the signal is skipped permanently rather than approximated.
+22. **Neutral movement bands are config** (`NEUTRAL_THRESHOLD_PCT`, env-overridable):
+    ±0.15% @1h, ±0.35% @4h, ±0.8% @24h, ±1.5% @72h. A +0.08% drift validates nothing. These are
+    tighter than the Phase-1 report bands because they now define *correctness*, not display.
+23. **Confidence buckets changed** to the spec's 0–49 / 50–59 / 60–69 / 70–79 / 80+ and each
+    bucket reports avg confidence next to realized accuracy so calibration error is measurable.
+    Confidence itself is untouched (measure first); the UI labels it MODEL CONFIDENCE.
+24. **Reliability floor**: results are flagged "statistically unreliable" below 50 evaluated
+    signals per horizon (`MIN_RELIABLE_SAMPLES`). The warning is always shown with the sample size.
+25. **Sessions are derived, stored, measured**: UTC timestamps are stored; the Israel-local
+    session (Asia / Europe / EU-US overlap / US / Overnight) is computed DST-correctly at
+    evaluation time and saved per evaluation. No assumption that any session is better — the
+    evaluation page reports measured accuracy per session.
+
+## Signal quality
+
+26. **marketInformationValue (0..1)** multiplies each market's weight:
+    `extremeness^0.6 × depth × timeToResolution × recentActivity`, where extremeness = 4p(1−p)
+    (peaks at 50/50, collapses near 0%/100%). The hard parse cutoff was widened to 1.5%/98.5%
+    since grading now handles near-resolved contracts. A 99.8% market can no longer dominate.
+27. **Momentum & persistence** come from our own snapshot series: 15-minute delta, pp/hour
+    velocity over the last hour, and persistence = |net move| / path length (42→43→45→50 ≈ 1.0,
+    42→50→43 ≈ 0.07). Persistence scales market weight by 0.7–1.0 — smooth drifts count more
+    than spike-and-revert. Deliberately simple; no curve fitting.
+28. **Cold start is explicit**: snapshots carry `historyMinutes`; a horizon whose delta window
+    exceeds collected history marks the signal LIMITED HISTORY with the exact minutes collected.
+    Missing deltas are skipped, never treated as zero. 1h signals may fall back to the real
+    15-minute observation (labeled, not extrapolated).
+29. **Hysteresis** (`stabilizeLabel`): leaving a directional label requires crossing
+    threshold − 7; a direct BULLISH↔BEARISH flip requires |score| ≥ 45, otherwise the path is
+    BULLISH → NEUTRAL → BEARISH. Both labels persist (`label` stabilized, `raw_label` raw) and
+    both correctness values are evaluated, so hysteresis can be judged with data later.
+    Hysteresis state survives restarts (bootstrapped from the last stored labels).
+30. **Divergence detection** compares BTC's 4h move against the info-value-weighted Polymarket
+    4h shift (thresholds: ≥0.6% price move against ≥8 poly score, 2h dedup). Events are stored,
+    alerted, and shown, and the evaluation page tracks what BTC did 4h/24h afterwards — they do
+    NOT enter the score. Attribution/agreement stats decide their future, not intuition.
+
+## Measurement-only guardrails
+
+31. **Component attribution measures, never tunes**: per component and per Polymarket
+    subcategory it reports direction-agreement rate and average score in correct vs incorrect
+    predictions. Weights stay fixed until a statistically meaningful sample exists
+    (≥50 evaluations/horizon, ideally weeks of data across market regimes).
+32. **Provider health counters are in-process** (reset on restart, shown with process uptime).
+    Last-successful-update survives implicitly in the stored data; adding a health table was
+    judged not worth the write load for an MVP validation phase.
+33. **CSV exports** (`/api/export/{signals,evaluations,polymarket_snapshots}.csv`) exist so the
+    model can be analyzed externally (pandas/sheets) without touching the SQLite file.
