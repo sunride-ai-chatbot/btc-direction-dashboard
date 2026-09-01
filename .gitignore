@@ -1,8 +1,36 @@
 node_modules/
 dist/
-data/signals.db*
-packages/backend/data/signals.db*
-packages/backend/data/etf-flows.json
+
+# Runtime databases & backups — never commit production data.
+# SQLite main files, WAL/SHM sidecars, import temp files, backups, dumps.
+*.db
+*.db-wal
+*.db-shm
+*.db.import
+*.sqlite
+*.sqlite-wal
+*.sqlite-shm
+*.sqlite3
+*-wal
+*-shm
+*backup*.db
+# Ignore data-dir contents (not the dir itself, so negations below work):
+packages/backend/data/*
+data/*
+# Config files in data/ that DO belong in git:
+!packages/backend/data/macro-events.json
+!packages/backend/data/etf-flows.example.json
+
+# Exported datasets (generate via /api/export/*.csv instead)
+signals.csv
+evaluations.csv
+polymarket_snapshots.csv
+
+# Secrets & environment
 .env
+.env.*
+!.env.example
+*token*.txt
+
 .DS_Store
 *.log
