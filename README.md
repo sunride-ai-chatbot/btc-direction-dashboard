@@ -88,6 +88,65 @@ A dead provider degrades confidence and is labeled in the UI; it never crashes t
 Explanations are deterministic templates filled from actual collected data — no LLM is used or
 required, and the numeric engine alone decides direction.
 
+## Railway deployment (production)
+
+The backend runs 24/7 as a Railway service with the SQLite database on a persistent volume.
+
+**Live service**: `https://btc-backend-production-f698.up.railway.app` (project `btc-direction-dashboard`, service `btc-backend`).
+
+### Architecture
+- Docker build (`Dockerfile`, node:26-slim, multi-stage; backend only).
+- Persistent volume `btc-backend-volume` mounted at **`/data`**; the DB lives at
+  **`/data/bitcoin-dashboard.sqlite`** via `DATABASE_PATH`. Never store the production DB in the
+  container filesystem — it would vanish on every deploy.
+- `railway.json`: health check `/health`, restart policy ALWAYS, 1 replica (the scheduler assumes
+  a single instance — do not scale horizontally).
+- The server binds `process.env.PORT` (Railway-injected) and `0.0.0.0` when `RAILWAY_ENVIRONMENT`
+  is present; local dev stays `127.0.0.1:8787`.
+
+### Environment variables (Railway)
+| Variable | Value | Purpose |
+|---|---|---|
+| `DATABASE_PATH` | `/data/bitcoin-dashboard.sqlite` | SQLite on the persistent volume |
+| `NODE_ENV` | `production` | |
+| `CORS_ORIGIN` | *(optional)* | comma-separated allowed origins; unset = allow all (read-only API) |
+| `IMPORT_TOKEN` | *(unset)* | set ONLY for a one-time DB import, remove afterwards |
+
+### Deploying updates
+```bash
+railway link          # once per checkout: project btc-direction-dashboard, service btc-backend
+railway up --detach   # build + deploy current directory
+railway logs          # runtime logs
+```
+
+### Verifying health
+`GET /health` returns status, uptime, DB path + row counts, scheduler state, last BTC/Polymarket/
+evaluator activity, and provider statuses; it is also Railway's health check (503 until the
+scheduler is up or if SQLite fails).
+
+### Restarting safely
+`railway redeploy -y` — SIGTERM triggers a graceful shutdown (schedulers stopped, DB closed);
+the volume preserves all data. Verified: restarts and redeploys do not lose rows.
+
+### Backup / restore
+- **Backup**: `sqlite3` not required — the API's CSV exports cover analysis; for a full binary
+  backup run locally `node -e "…backupTo(…)"` or copy `/data/bitcoin-dashboard.sqlite` via
+  `railway ssh` (VACUUM'd snapshots preferred; `SignalDatabase.backupTo()` wraps `VACUUM INTO`).
+- **Restore / import**: set `IMPORT_TOKEN` on the service, redeploy, then
+  `curl -X POST $URL/api/admin/import-db -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/octet-stream" --data-binary @snapshot.db`,
+  then `railway redeploy -y` and **delete `IMPORT_TOKEN`**. The endpoint 404s while the token is
+  unset. Local history was migrated this way on 2026-09-01 (156 signals / 35 evaluations /
+  485 snapshots at migration time); the pre-migration local DB and a `signals-backup-*.db`
+  snapshot remain untouched in `packages/backend/data/`.
+
+### Frontend against production
+```bash
+VITE_API_BASE_URL=https://btc-backend-production-f698.up.railway.app npm run dev -w frontend
+# or bake it into a static build:
+VITE_API_BASE_URL=https://btc-backend-production-f698.up.railway.app npm run build -w frontend
+```
+Unset, the frontend uses the local Vite proxy → `127.0.0.1:8787` as before.
+
 ## Limitations
 
 - **Probability changes need warm-up**: 1h/4h/24h Polymarket deltas appear only after the app has

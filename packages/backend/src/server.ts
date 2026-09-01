@@ -1,5 +1,7 @@
 import Fastify from 'fastify';
 import cors from '@fastify/cors';
+import { timingSafeEqual } from 'node:crypto';
+import { writeFileSync, renameSync, rmSync } from 'node:fs';
 import { SignalDatabase } from './db/database.js';
 import { GammaPolymarketProvider } from './providers/polymarket.js';
 import { BinanceBitcoinProvider } from './providers/bitcoin.js';
@@ -16,8 +18,12 @@ import { toCsv } from './utils/csv.js';
 import { DIVERGENCE_CONFIG, EVALUATION_CONFIG, HORIZON_WEIGHTS, NEUTRAL_THRESHOLD_PCT, REFRESH_INTERVALS_MS, SERVER_CONFIG } from './config.js';
 import { HORIZONS, type Horizon, type SignalBundle, type SignalLabel, type PolymarketSnapshot } from './types.js';
 
+const startedAt = Date.now();
 const db = new SignalDatabase(SERVER_CONFIG.dbPath);
 const health = new HealthRegistry();
+
+console.log('[startup] node', process.version, '| db:', SERVER_CONFIG.dbPath, '| host:', SERVER_CONFIG.host, '| port:', SERVER_CONFIG.port);
+console.log('[startup] row counts:', JSON.stringify(db.countsByTable()));
 
 const polymarketProvider = new GammaPolymarketProvider(db);
 const bitcoinProvider = new BinanceBitcoinProvider();
@@ -40,17 +46,26 @@ let latestPolySnapshot: PolymarketSnapshot | null = null;
 // persist cadence continues from the last stored signal timestamp.
 let stableLabels: Partial<Record<Horizon, SignalLabel>> = db.getLatestLabels();
 let lastPersistTs = db.getMaxSignalTs();
+let lastBtcUpdateTs: number | null = null;
+let lastPolymarketUpdateTs: number | null = null;
+let lastEvaluatorRunTs: number | null = null;
+let schedulersStarted = false;
+let shuttingDown = false;
+const timers: NodeJS.Timeout[] = [];
 const PERSIST_INTERVAL_MS = 5 * 60_000;
 
 async function computeSignals(): Promise<void> {
+  if (shuttingDown) return;
   try {
     const { bundle, polySnapshot, tech } = await runPipeline(providers, stableLabels);
     latestBundle = bundle;
     latestPolySnapshot = polySnapshot;
     for (const horizon of HORIZONS) stableLabels[horizon] = bundle.signals[horizon].label;
+    if (polySnapshot.freshness === 'fresh') lastPolymarketUpdateTs = polySnapshot.timestamp;
 
     if (tech.freshness === 'fresh' && tech.price > 0) {
       db.insertBtcPrice(bundle.generatedAt, tech.price, tech.volume24h);
+      lastBtcUpdateTs = bundle.generatedAt;
     }
 
     if (bundle.generatedAt - lastPersistTs >= PERSIST_INTERVAL_MS) {
@@ -64,25 +79,58 @@ async function computeSignals(): Promise<void> {
     if (divergence && !db.hasRecentDivergence(divergence.kind, bundle.generatedAt - DIVERGENCE_CONFIG.dedupWindowMs)) {
       db.insertDivergence(divergence);
       db.insertAlert('divergence', divergence.message, 'warning', null, divergence.ts);
+      console.log('[divergence]', divergence.message);
     }
 
     alertEngine.evaluate(bundle, polySnapshot, tech);
   } catch (err) {
-    console.error('[pipeline] compute failed:', err);
+    console.error('[pipeline] compute failed:', err instanceof Error ? err.message : err);
   }
 }
 
 function evaluateDueSignals(): void {
+  if (shuttingDown) return;
   try {
     const { evaluated } = runEvaluationPass(db);
+    lastEvaluatorRunTs = Date.now();
     if (evaluated > 0) console.log(`[evaluator] evaluated ${evaluated} signal(s); total ${db.countEvaluations()}`);
   } catch (err) {
-    console.error('[evaluator] pass failed:', err);
+    console.error('[evaluator] pass failed:', err instanceof Error ? err.message : err);
   }
 }
 
-const app = Fastify({ logger: false });
-await app.register(cors, { origin: true });
+const app = Fastify({ logger: false, bodyLimit: 128 * 1024 * 1024 });
+await app.register(cors, {
+  origin: SERVER_CONFIG.corsOrigin ? SERVER_CONFIG.corsOrigin.split(',').map((s) => s.trim()) : true,
+});
+
+// Railway health check + ops summary. 503 until the scheduler is initialized
+// and whenever SQLite stops answering. No secrets in the payload.
+app.get('/health', async (_req, reply) => {
+  let databaseOk = false;
+  let counts: Record<string, number> | null = null;
+  try {
+    counts = db.countsByTable();
+    databaseOk = true;
+  } catch {
+    databaseOk = false;
+  }
+  const snap = health.snapshot({ polymarket: 'realtime', 'btc-price': 'realtime', macro: 'daily', etf: 'manual' });
+  const ok = databaseOk && schedulersStarted && !shuttingDown;
+  return reply.code(ok ? 200 : 503).send({
+    status: ok ? 'ok' : 'unhealthy',
+    uptimeSeconds: Math.floor((Date.now() - startedAt) / 1000),
+    database: databaseOk ? 'ok' : 'error',
+    databasePath: SERVER_CONFIG.dbPath,
+    rowCounts: counts,
+    scheduler: schedulersStarted ? (shuttingDown ? 'stopping' : 'running') : 'not-started',
+    lastBtcUpdate: lastBtcUpdateTs,
+    lastPolymarketUpdate: lastPolymarketUpdateTs,
+    lastEvaluatorRun: lastEvaluatorRunTs,
+    lastSignalComputedAt: latestBundle?.generatedAt ?? null,
+    providers: Object.fromEntries(snap.providers.map((p) => [p.name, p.status])),
+  });
+});
 
 app.get('/api/signal', async (_req, reply) => {
   if (!latestBundle) return reply.code(503).send({ error: 'Signals not computed yet — try again shortly' });
@@ -123,6 +171,7 @@ app.get('/api/health', async () => {
     evaluationsStored: db.countEvaluations(),
     neutralThresholdsPct: NEUTRAL_THRESHOLD_PCT,
     evaluationJobMs: EVALUATION_CONFIG.jobIntervalMs,
+    lastEvaluatorRun: lastEvaluatorRunTs,
   };
 });
 
@@ -167,12 +216,79 @@ app.get<{ Params: { file: string } }>('/api/export/:file', async (req, reply) =>
   return toCsv(exporter());
 });
 
+/**
+ * ONE-TIME history import (migrating the local production SQLite into the
+ * Railway volume). Active only while IMPORT_TOKEN is set; disabled (404)
+ * otherwise. The uploaded file is written next to the target and swapped in
+ * atomically, then the process exits so the restart policy reopens the
+ * imported DB cleanly. Remove IMPORT_TOKEN after use.
+ */
+app.addContentTypeParser('application/octet-stream', { parseAs: 'buffer' }, (_req, body, done) => done(null, body));
+app.post('/api/admin/import-db', async (req, reply) => {
+  const token = SERVER_CONFIG.importToken;
+  if (!token) return reply.code(404).send({ error: 'not found' });
+  const supplied = (req.headers.authorization ?? '').replace(/^Bearer /, '');
+  const a = Buffer.from(supplied);
+  const b = Buffer.from(token);
+  if (a.length !== b.length || !timingSafeEqual(a, b)) {
+    return reply.code(403).send({ error: 'forbidden' });
+  }
+  const body = req.body as Buffer;
+  if (!Buffer.isBuffer(body) || body.length < 4096 || !body.subarray(0, 16).toString('latin1').startsWith('SQLite format 3')) {
+    return reply.code(400).send({ error: 'body must be a raw SQLite database file (application/octet-stream)' });
+  }
+  const tmpPath = SERVER_CONFIG.dbPath + '.import';
+  writeFileSync(tmpPath, body);
+  const preCounts = db.countsByTable();
+  console.log('[import] received', body.length, 'bytes; replacing DB (previous counts:', JSON.stringify(preCounts), ')');
+  shuttingDown = true;
+  for (const t of timers) clearInterval(t);
+  db.close();
+  // Stale WAL/SHM sidecars from the replaced DB must not be recovered against the imported file.
+  for (const suffix of ['-wal', '-shm']) {
+    rmSync(SERVER_CONFIG.dbPath + suffix, { force: true });
+  }
+  renameSync(tmpPath, SERVER_CONFIG.dbPath);
+  setTimeout(() => {
+    console.log('[import] exiting for clean restart on imported DB');
+    process.exit(0);
+  }, 500);
+  return { ok: true, bytes: body.length, replacedCounts: preCounts, note: 'process restarting to reopen imported DB' };
+});
+
+function shutdown(signal: string): void {
+  if (shuttingDown) return;
+  shuttingDown = true;
+  console.log(`[shutdown] ${signal} received — stopping schedulers, closing server and DB`);
+  for (const t of timers) clearInterval(t);
+  void app
+    .close()
+    .catch(() => {})
+    .then(() => {
+      try {
+        db.close();
+      } catch {}
+      console.log('[shutdown] clean exit');
+      process.exit(0);
+    });
+  setTimeout(() => process.exit(0), 8000).unref();
+}
+process.on('SIGTERM', () => shutdown('SIGTERM'));
+process.on('SIGINT', () => shutdown('SIGINT'));
+
 async function main(): Promise<void> {
   await computeSignals();
   evaluateDueSignals();
-  setInterval(computeSignals, REFRESH_INTERVALS_MS.signalCompute);
-  setInterval(evaluateDueSignals, EVALUATION_CONFIG.jobIntervalMs);
-  setInterval(() => db.pruneOldData(30 * 24 * 3_600_000), 6 * 3_600_000);
+  timers.push(setInterval(computeSignals, REFRESH_INTERVALS_MS.signalCompute));
+  timers.push(setInterval(evaluateDueSignals, EVALUATION_CONFIG.jobIntervalMs));
+  timers.push(setInterval(() => db.pruneOldData(30 * 24 * 3_600_000), 6 * 3_600_000));
+  timers.push(
+    setInterval(() => {
+      const c = db.countsByTable();
+      console.log('[heartbeat]', JSON.stringify({ signals: c.signals, evaluations: c.evaluations, snapshots: c.polymarket_history }));
+    }, 3_600_000),
+  );
+  schedulersStarted = true;
 
   await app.listen({ port: SERVER_CONFIG.port, host: SERVER_CONFIG.host });
   console.log(`[server] listening on http://${SERVER_CONFIG.host}:${SERVER_CONFIG.port}`);

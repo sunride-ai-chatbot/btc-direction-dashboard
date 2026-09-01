@@ -1,4 +1,4 @@
-import { useApi } from '../lib/api';
+import { useApi, apiUrl } from '../lib/api';
 import type { AttributionReport, DivergencePerformance, EvaluationReportPayload, HorizonEvaluationReport } from '../lib/types';
 
 function pct(v: number | null): string {
@@ -130,10 +130,10 @@ export function EvaluationPage() {
       <div className="flex flex-wrap items-baseline justify-between gap-2">
         <h2 className="text-xl font-bold">Model evaluation</h2>
         <div className="flex gap-3 text-xs">
-          <a className="text-slate-400 underline underline-offset-2 hover:text-slate-200" href="/api/export/evaluations.csv">
+          <a className="text-slate-400 underline underline-offset-2 hover:text-slate-200" href={apiUrl("/api/export/evaluations.csv")}>
             evaluations.csv
           </a>
-          <a className="text-slate-400 underline underline-offset-2 hover:text-slate-200" href="/api/export/signals.csv">
+          <a className="text-slate-400 underline underline-offset-2 hover:text-slate-200" href={apiUrl("/api/export/signals.csv")}>
             signals.csv
           </a>
         </div>

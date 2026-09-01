@@ -1,5 +1,15 @@
 import { useEffect, useRef, useState } from 'react';
 
+/**
+ * Backend base URL. Empty (default) = same origin + Vite dev proxy.
+ * Production builds set VITE_API_BASE_URL to the deployed backend URL.
+ */
+export const API_BASE: string = (import.meta.env.VITE_API_BASE_URL ?? '').replace(/\/$/, '');
+
+export function apiUrl(path: string): string {
+  return API_BASE + path;
+}
+
 export function useApi<T>(path: string, refreshMs: number): { data: T | null; error: string | null; lastFetched: number | null } {
   const [data, setData] = useState<T | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -11,7 +21,7 @@ export function useApi<T>(path: string, refreshMs: number): { data: T | null; er
 
     async function load(): Promise<void> {
       try {
-        const res = await fetch(path);
+        const res = await fetch(apiUrl(path));
         if (!res.ok) throw new Error(`HTTP ${res.status}`);
         const json = (await res.json()) as T;
         if (!cancelled) {

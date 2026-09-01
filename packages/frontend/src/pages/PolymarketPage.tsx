@@ -1,4 +1,4 @@
-import { useApi, formatUsd, timeAgo } from '../lib/api';
+import { useApi, formatUsd, timeAgo, apiUrl } from '../lib/api';
 import type { PolymarketSnapshot } from '../lib/types';
 
 function pp(change: number | null): string {
@@ -23,7 +23,7 @@ export function PolymarketPage() {
         <h2 className="text-xl font-bold">Polymarket — BTC-relevant markets</h2>
         <span className="text-xs text-slate-500">
           {snapshot.freshness} · {timeAgo(snapshot.timestamp)} · {Math.floor(snapshot.historyMinutes / 60)}h{' '}
-          {snapshot.historyMinutes % 60}m of history · <a className="underline underline-offset-2 hover:text-slate-300" href="/api/export/polymarket_snapshots.csv">csv</a>
+          {snapshot.historyMinutes % 60}m of history · <a className="underline underline-offset-2 hover:text-slate-300" href={apiUrl("/api/export/polymarket_snapshots.csv")}>csv</a>
         </span>
       </div>
       <p className="mt-1 text-sm text-slate-400">

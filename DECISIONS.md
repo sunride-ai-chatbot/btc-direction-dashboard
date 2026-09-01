@@ -132,3 +132,38 @@ Key judgment calls made while building the MVP, so they can be revisited deliber
     judged not worth the write load for an MVP validation phase.
 33. **CSV exports** (`/api/export/{signals,evaluations,polymarket_snapshots}.csv`) exist so the
     model can be analyzed externally (pandas/sheets) without touching the SQLite file.
+
+# Phase 3 — Railway deployment (2026-09-01)
+
+34. **SQLite on a Railway persistent volume, not PostgreSQL.** The workload is one small writer
+    (a few rows/minute), one service instance, and we must carry the existing SQLite history
+    forward unchanged. A volume-backed `/data/bitcoin-dashboard.sqlite` gives durability across
+    deploys/restarts with zero migration risk. PostgreSQL is the documented FUTURE option — it
+    becomes necessary only if we add horizontal scaling, concurrent writers, or want managed
+    backups; all SQL already lives behind `SignalDatabase`, so the swap stays contained.
+35. **Single-instance scheduler assumption.** Signal generation, evaluation, and alert dedup all
+    assume exactly one process (railway.json pins `numReplicas: 1`). Scaling replicas without
+    moving schedulers to a leader-elected/queued design would double-write history.
+36. **`DATABASE_PATH` env decides the DB location** (local default `./data/signals.db` unchanged;
+    `DB_PATH` kept as a legacy alias). Host binds `0.0.0.0` only when `RAILWAY_ENVIRONMENT` is
+    present; the port always honors `process.env.PORT` (Railway injects it; local default 8787).
+37. **History migration used a token-guarded one-time import endpoint**
+    (`POST /api/admin/import-db`, active only while `IMPORT_TOKEN` is set, constant-time compare,
+    SQLite magic-byte check, atomic tmp-file rename, WAL sidecars cleared, then process exit for
+    a clean reopen). Chosen over `railway ssh` streaming for verifiability: the response reports
+    the replaced row counts, and post-restart counts were compared against the local snapshot.
+    The token was deleted after migration — the endpoint now 404s. The source snapshot came from
+    `VACUUM INTO` (consistent under WAL); the pre-migration local DB and the snapshot both remain
+    on disk untouched.
+38. **Clean exit does not auto-restart on Railway** (restart policy reacts to crashes/health
+    failures). The import flow therefore ends with an explicit `railway redeploy` — which doubled
+    as the redeploy-persistence test.
+39. **railway.json config-as-code is deprecated by Railway** (supported until 2026-12-01) in
+    favor of `.railway/railway.ts` IaC. Kept railway.json for now; migrating to IaC is a small
+    future task (`railway config migrate --apply`).
+40. **CORS stays permissive** (`origin: true`) while no fixed frontend origin exists: the API is
+    read-only apart from alert-ack; the import endpoint is disabled. `CORS_ORIGIN` env can
+    restrict it the moment the frontend gets a stable production URL.
+41. **Frontend deployment deferred** (per instruction to prioritize the backend). The frontend
+    reads `VITE_API_BASE_URL` and was verified (desktop + mobile) against the Railway backend;
+    deploying it as a static site is a follow-up.

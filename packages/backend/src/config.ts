@@ -61,10 +61,20 @@ export const POLYMARKET_CONFIG = {
   maxMarketsPerCategory: 12,
 };
 
+const onRailway = process.env.RAILWAY_ENVIRONMENT !== undefined;
+
 export const SERVER_CONFIG = {
+  // Railway injects PORT; local default stays 8787.
   port: envInt('PORT', 8787),
-  host: process.env.HOST ?? '127.0.0.1',
-  dbPath: process.env.DB_PATH ?? './data/signals.db',
+  // Railway routes traffic to the container IP — must bind 0.0.0.0 there.
+  host: process.env.HOST ?? (onRailway ? '0.0.0.0' : '127.0.0.1'),
+  // Production: DATABASE_PATH points into the persistent volume (e.g. /data/bitcoin-dashboard.sqlite).
+  // Local dev keeps ./data/signals.db. DB_PATH kept as legacy alias.
+  dbPath: process.env.DATABASE_PATH ?? process.env.DB_PATH ?? './data/signals.db',
+  // Comma-separated allowed origins; unset = allow all (dev / public read-only API).
+  corsOrigin: process.env.CORS_ORIGIN,
+  // One-time DB import guard; endpoint is disabled when unset.
+  importToken: process.env.IMPORT_TOKEN,
 };
 
 /**

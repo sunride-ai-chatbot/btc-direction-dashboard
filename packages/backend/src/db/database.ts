@@ -336,6 +336,21 @@ export class SignalDatabase {
 
   // ---------- maintenance ----------
 
+  /** Row counts for every production table — used by /health and import verification. */
+  countsByTable(): Record<string, number> {
+    const tables = ['signals', 'evaluations', 'divergences', 'polymarket_history', 'btc_price_history', 'alerts'];
+    const out: Record<string, number> = {};
+    for (const t of tables) {
+      out[t] = (this.db.prepare(`SELECT COUNT(*) AS c FROM ${t}`).get() as { c: number }).c;
+    }
+    return out;
+  }
+
+  /** Consistent point-in-time snapshot of the whole DB (works under WAL). */
+  backupTo(destPath: string): void {
+    this.db.prepare('VACUUM INTO ?').run(destPath);
+  }
+
   pruneOldData(olderThanMs: number): void {
     const cutoff = Date.now() - olderThanMs;
     this.db.prepare('DELETE FROM polymarket_history WHERE ts < ?').run(cutoff);

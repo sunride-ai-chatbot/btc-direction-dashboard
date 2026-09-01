@@ -1,4 +1,4 @@
-import { useApi, timeAgo } from '../lib/api';
+import { useApi, timeAgo, apiUrl } from '../lib/api';
 import type { HealthPayload } from '../lib/types';
 
 const STATUS_STYLE: Record<string, string> = {
@@ -83,9 +83,9 @@ export function HealthPage() {
         </div>
         <div className="mt-2 text-slate-500">
           Export raw data:{' '}
-          <a className="underline underline-offset-2 hover:text-slate-300" href="/api/export/signals.csv">signals.csv</a> ·{' '}
-          <a className="underline underline-offset-2 hover:text-slate-300" href="/api/export/evaluations.csv">evaluations.csv</a> ·{' '}
-          <a className="underline underline-offset-2 hover:text-slate-300" href="/api/export/polymarket_snapshots.csv">polymarket_snapshots.csv</a>
+          <a className="underline underline-offset-2 hover:text-slate-300" href={apiUrl("/api/export/signals.csv")}>signals.csv</a> ·{' '}
+          <a className="underline underline-offset-2 hover:text-slate-300" href={apiUrl("/api/export/evaluations.csv")}>evaluations.csv</a> ·{' '}
+          <a className="underline underline-offset-2 hover:text-slate-300" href={apiUrl("/api/export/polymarket_snapshots.csv")}>polymarket_snapshots.csv</a>
         </div>
       </div>
     </div>
