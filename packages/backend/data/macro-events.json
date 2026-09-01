@@ -1,0 +1,8 @@
+{
+  "_comment": "Editable schedule of macro events. Verify dates against the official Fed calendar (federalreserve.gov/monetarypolicy/fomccalendars.htm) and BLS CPI schedule. The app only reads name+date.",
+  "events": [
+    { "name": "FOMC meeting", "date": "2026-09-16" },
+    { "name": "FOMC meeting", "date": "2026-10-28" },
+    { "name": "FOMC meeting", "date": "2026-12-09" }
+  ]
+}

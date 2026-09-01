@@ -1,0 +1,8 @@
+{
+  "_comment": "EXAMPLE ONLY — copy to etf-flows.json and fill with real daily net flows (USD) from a source like Farside Investors (farside.co.uk/btc). Without etf-flows.json the ETF component honestly reports 'unavailable'. Values below are placeholders, not real data.",
+  "updatedAt": "2026-01-01T00:00:00Z",
+  "dailyFlowsUsd": [
+    { "date": "2025-12-31", "netFlow": 0 },
+    { "date": "2025-12-30", "netFlow": 0 }
+  ]
+}
