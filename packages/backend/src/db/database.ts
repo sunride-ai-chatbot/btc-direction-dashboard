@@ -1,8 +1,9 @@
 import { DatabaseSync } from 'node:sqlite';
 import { mkdirSync } from 'node:fs';
 import { dirname } from 'node:path';
-import type { Horizon, HorizonSignal, SignalLabel, StoredEvaluation, DivergenceEvent } from '../types.js';
+import type { Candle1m, Horizon, HorizonSignal, SignalLabel, StoredEvaluation, DivergenceEvent } from '../types.js';
 import type { CmcNewsItem } from '../providers/cmcNews.js';
+import { classifyRegime as regimeFromTechnical } from '../scoring/edge.js';
 
 /**
  * Versioned schema via PRAGMA user_version.
@@ -151,6 +152,104 @@ export class SignalDatabase {
         PRAGMA user_version = 4;
       `);
     }
+
+    // v5 — evaluation provenance (band + regime) and self-collected 1-minute candles.
+    // Existing rows are tagged 'fixed-v1' with the band that actually judged them,
+    // and their regime is derived from the technical context stored at signal time.
+    if (this.userVersion < 5) {
+      this.db.exec(`
+        ALTER TABLE evaluations ADD COLUMN band_pct REAL;
+        ALTER TABLE evaluations ADD COLUMN band_method TEXT;
+        ALTER TABLE evaluations ADD COLUMN regime TEXT;
+        UPDATE evaluations SET
+          band_method = 'fixed-v1',
+          band_pct = CASE horizon WHEN '1h' THEN 0.15 WHEN '4h' THEN 0.35 WHEN '24h' THEN 0.8 ELSE 1.5 END
+        WHERE band_method IS NULL;
+        CREATE TABLE btc_candles_1m (
+          ts INTEGER PRIMARY KEY,
+          open REAL NOT NULL,
+          high REAL NOT NULL,
+          low REAL NOT NULL,
+          close REAL NOT NULL,
+          volume REAL NOT NULL,
+          taker_buy_volume REAL NOT NULL
+        );
+      `);
+      this.backfillRegimes();
+      this.db.exec('PRAGMA user_version = 5');
+    }
+  }
+
+  /** Derive regime for legacy evaluation rows from the signal's stored technical context. */
+  private backfillRegimes(): void {
+    const rows = this.db
+      .prepare('SELECT e.id AS id, s.context_json AS ctx FROM evaluations e JOIN signals s ON s.id = e.signal_id WHERE e.regime IS NULL')
+      .all() as unknown as Array<{ id: number; ctx: string | null }>;
+    const update = this.db.prepare('UPDATE evaluations SET regime = ? WHERE id = ?');
+    this.db.exec('BEGIN');
+    try {
+      for (const r of rows) {
+        let regime = 'unknown';
+        if (r.ctx) {
+          try {
+            const ctx = JSON.parse(r.ctx) as { technicalValues?: Record<string, unknown> };
+            regime = regimeFromTechnical(ctx.technicalValues);
+          } catch {
+            // unparseable legacy context — stays unknown
+          }
+        }
+        update.run(regime, r.id);
+      }
+      this.db.exec('COMMIT');
+    } catch (err) {
+      this.db.exec('ROLLBACK');
+      throw err;
+    }
+  }
+
+  // ---------- 1-minute candles ----------
+
+  upsertCandle(c: Candle1m): void {
+    this.db
+      .prepare(
+        `INSERT INTO btc_candles_1m (ts, open, high, low, close, volume, taker_buy_volume) VALUES (?, ?, ?, ?, ?, ?, ?)
+         ON CONFLICT(ts) DO UPDATE SET open = excluded.open, high = excluded.high, low = excluded.low, close = excluded.close, volume = excluded.volume, taker_buy_volume = excluded.taker_buy_volume`,
+      )
+      .run(c.ts, c.open, c.high, c.low, c.close, c.volume, c.takerBuyVolume);
+  }
+
+  upsertCandles(candles: Candle1m[]): void {
+    this.db.exec('BEGIN');
+    try {
+      for (const c of candles) this.upsertCandle(c);
+      this.db.exec('COMMIT');
+    } catch (err) {
+      this.db.exec('ROLLBACK');
+      throw err;
+    }
+  }
+
+  /** Newest N candles in chronological order. */
+  getRecentCandles(n: number): Candle1m[] {
+    const rows = this.db
+      .prepare('SELECT ts, open, high, low, close, volume, taker_buy_volume AS takerBuyVolume FROM btc_candles_1m ORDER BY ts DESC LIMIT ?')
+      .all(n) as unknown as Candle1m[];
+    return rows.reverse();
+  }
+
+  /** Chronological price samples since a timestamp (for realized volatility). */
+  getPriceSeriesSince(sinceTs: number): number[] {
+    const rows = this.db
+      .prepare('SELECT price FROM btc_price_history WHERE ts >= ? ORDER BY ts ASC')
+      .all(sinceTs) as unknown as Array<{ price: number }>;
+    return rows.map((r) => r.price);
+  }
+
+  /** Lightweight evaluation rows for edge/conformal/drift math (no JSON columns). */
+  getEvaluationRowsLite(): Array<{ horizon: Horizon; signal_ts: number; final_score: number; pct_change: number; actual_direction: 'up' | 'down' | 'flat'; correct: number; regime: string | null; band_method: string | null }> {
+    return this.db
+      .prepare('SELECT horizon, signal_ts, final_score, pct_change, actual_direction, correct, regime, band_method FROM evaluations ORDER BY signal_ts ASC')
+      .all() as unknown as Array<{ horizon: Horizon; signal_ts: number; final_score: number; pct_change: number; actual_direction: 'up' | 'down' | 'flat'; correct: number; regime: string | null; band_method: string | null }>;
   }
 
   // ---------- CMC news (observational only; not part of model scoring) ----------
@@ -360,13 +459,15 @@ export class SignalDatabase {
       .prepare(
         `INSERT OR IGNORE INTO evaluations
          (signal_id, horizon, signal_ts, evaluated_ts, entry_price, future_price, abs_change, pct_change,
-          predicted_label, raw_label, actual_direction, correct, raw_correct, confidence, final_score, session, components_json)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+          predicted_label, raw_label, actual_direction, correct, raw_correct, confidence, final_score, session, components_json,
+          band_pct, band_method, regime)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       )
       .run(
         e.signal_id, e.horizon, e.signal_ts, e.evaluated_ts, e.entry_price, e.future_price,
         e.abs_change, e.pct_change, e.predicted_label, e.raw_label, e.actual_direction,
         e.correct, e.raw_correct, e.confidence, e.final_score, e.session, e.components_json,
+        e.band_pct, e.band_method, e.regime,
       );
   }
 
@@ -437,7 +538,7 @@ export class SignalDatabase {
 
   exportEvaluationRows(): Array<Record<string, unknown>> {
     return this.db
-      .prepare('SELECT id, signal_id, horizon, signal_ts, evaluated_ts, entry_price, future_price, abs_change, pct_change, predicted_label, raw_label, actual_direction, correct, raw_correct, confidence, final_score, session FROM evaluations ORDER BY signal_ts ASC')
+      .prepare('SELECT id, signal_id, horizon, signal_ts, evaluated_ts, entry_price, future_price, abs_change, pct_change, predicted_label, raw_label, actual_direction, correct, raw_correct, confidence, final_score, session, band_pct, band_method, regime FROM evaluations ORDER BY signal_ts ASC')
       .all() as unknown as Array<Record<string, unknown>>;
   }
 
@@ -451,7 +552,7 @@ export class SignalDatabase {
 
   /** Row counts for every production table — used by /health and import verification. */
   countsByTable(): Record<string, number> {
-    const tables = ['signals', 'evaluations', 'divergences', 'polymarket_history', 'btc_price_history', 'alerts', 'news_items'];
+    const tables = ['signals', 'evaluations', 'divergences', 'polymarket_history', 'btc_price_history', 'btc_candles_1m', 'alerts', 'news_items'];
     const out: Record<string, number> = {};
     for (const t of tables) {
       out[t] = (this.db.prepare(`SELECT COUNT(*) AS c FROM ${t}`).get() as { c: number }).c;
@@ -468,6 +569,7 @@ export class SignalDatabase {
     const cutoff = Date.now() - olderThanMs;
     this.db.prepare('DELETE FROM polymarket_history WHERE ts < ?').run(cutoff);
     this.db.prepare('DELETE FROM btc_price_history WHERE ts < ?').run(cutoff);
+    this.db.prepare('DELETE FROM btc_candles_1m WHERE ts < ?').run(cutoff);
   }
 
   close(): void {

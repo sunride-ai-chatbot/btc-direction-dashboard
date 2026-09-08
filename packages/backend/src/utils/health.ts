@@ -61,6 +61,21 @@ export class HealthRegistry {
     this.entry(name).note = note;
   }
 
+  /** Push-style providers (WebSocket streams) report their state directly instead of being wrapped. */
+  report(name: string, state: { freshness: Freshness; latencyMs?: number | null; note?: string | null; failed?: boolean }): void {
+    const e = this.entry(name);
+    e.freshness = state.freshness;
+    if (state.latencyMs !== undefined) e.lastLatencyMs = state.latencyMs;
+    if (state.note !== undefined) e.note = state.note;
+    if (state.freshness === 'fresh') {
+      e.lastSuccessTs = Date.now();
+      e.consecutiveFailures = 0;
+    } else if (state.failed) {
+      e.consecutiveFailures++;
+      e.totalFailures++;
+    }
+  }
+
   snapshot(cadence: Record<string, 'realtime' | 'daily' | 'manual'>): { processStartTs: number; providers: ProviderHealth[] } {
     const providers: ProviderHealth[] = [];
     for (const [name, e] of this.entries) {

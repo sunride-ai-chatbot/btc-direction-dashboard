@@ -1,5 +1,5 @@
 import { useState } from 'react';
-import { useApi } from '../lib/api';
+import { useApi, useLiveStream } from '../lib/api';
 import { HORIZONS, type Horizon, type SignalBundle, type AlertRow, type DivergencePerformance } from '../lib/types';
 import { SignalCard } from '../components/SignalCard';
 import { ComponentCard } from '../components/ComponentCard';
@@ -20,6 +20,7 @@ export function Dashboard() {
   const { data: bundle, error } = useApi<SignalBundle>('/api/signal', 30_000);
   const { data: alertData } = useApi<{ alerts: AlertRow[] }>('/api/alerts', 60_000);
   const { data: divergenceData } = useApi<DivergencePerformance>('/api/divergences', 120_000);
+  const live = useLiveStream();
 
   if (error && !bundle) {
     return (
@@ -55,7 +56,7 @@ export function Dashboard() {
           <div className="mt-1.5 text-xs text-slate-500">{t('dash.divergenceNote')}</div>
         </div>
       )}
-      <SignalCard signal={signal} />
+      <SignalCard signal={signal} live={live} />
 
       <div className="mt-6 flex flex-wrap justify-center gap-2">
         {HORIZONS.map((h) => (

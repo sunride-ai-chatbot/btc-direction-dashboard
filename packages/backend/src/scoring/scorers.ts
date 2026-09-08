@@ -1,7 +1,9 @@
 import { clamp } from '../utils/indicators.js';
+import { CVD_CONFIG } from '../config.js';
 import type {
   BitcoinTechnicals,
   ComponentScore,
+  CvdSnapshot,
   EtfFlows,
   Horizon,
   LiquidityContext,
@@ -129,7 +131,7 @@ export function scorePolymarket(snapshot: PolymarketSnapshot, horizon: Horizon):
   };
 }
 
-export function scoreTechnical(tech: BitcoinTechnicals, horizon: Horizon): ComponentScore {
+export function scoreTechnical(tech: BitcoinTechnicals, horizon: Horizon, cvd: CvdSnapshot | null = null): ComponentScore {
   const reasons: string[] = [];
   const risks: string[] = [];
 
@@ -138,6 +140,21 @@ export function scoreTechnical(tech: BitcoinTechnicals, horizon: Horizon): Compo
   }
 
   const parts: Array<{ value: number; weight: number }> = [];
+
+  // Order flow (CVD) from our own 1-minute candle stream: taker buy vs sell imbalance.
+  let cvdRatioUsed: number | null = null;
+  const cvdWeight = CVD_CONFIG.weightByHorizon[horizon];
+  if (CVD_CONFIG.enabled && cvd && cvdWeight > 0) {
+    const windowMin = CVD_CONFIG.windowMinutesByHorizon[horizon];
+    const ratio = windowMin <= 60 ? cvd.ratio1h : cvd.ratio4h;
+    if (ratio !== null) {
+      cvdRatioUsed = ratio;
+      parts.push({ value: clamp(ratio * CVD_CONFIG.scale, -100, 100), weight: cvdWeight });
+      const label = windowMin <= 60 ? '1h' : '4h';
+      if (ratio >= 0.08) reasons.push(`Order flow: taker buying dominates (CVD +${(ratio * 100).toFixed(0)}% over ${label})`);
+      else if (ratio <= -0.08) reasons.push(`Order flow: taker selling dominates (CVD ${(ratio * 100).toFixed(0)}% over ${label})`);
+    }
+  }
 
   const momentumChange = horizon === '1h' ? tech.change1h : horizon === '4h' ? tech.change4h : tech.change24h;
   const momentumScale = horizon === '1h' ? 40 : horizon === '4h' ? 25 : 12;
@@ -226,6 +243,11 @@ export function scoreTechnical(tech: BitcoinTechnicals, horizon: Horizon): Compo
       ema200: round(tech.ema200),
       macdHistogram: tech.macd ? +tech.macd.histogram.toFixed(2) : null,
       change24h: round(tech.change24h),
+      volatility24h: round(tech.volatility24h),
+      cvdRatio: cvdRatioUsed,
+      cvd15m: cvd?.ratio15m ?? null,
+      cvd1h: cvd?.ratio1h ?? null,
+      cvd4h: cvd?.ratio4h ?? null,
       source: tech.source,
     },
     reasons,

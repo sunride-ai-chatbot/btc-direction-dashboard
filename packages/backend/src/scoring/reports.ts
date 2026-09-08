@@ -1,6 +1,10 @@
 import { HORIZONS } from '../types.js';
-import type { EvaluationBucket, Horizon } from '../types.js';
+import type { EdgeStats, EvaluationBucket, Horizon } from '../types.js';
 import type { EvaluationRow, SignalDatabase } from '../db/database.js';
+import { computeEdgeStats, conformalCoverage, driftReport, fitConformal, type DriftReport, type EvalLike } from './edge.js';
+import { currentBands } from './evaluator.js';
+import { NEUTRAL_THRESHOLD_PCT } from '../config.js';
+import { quantile, wilsonInterval } from '../utils/stats.js';
 
 /** Below this many evaluated signals per horizon, results are flagged unreliable. */
 export const MIN_RELIABLE_SAMPLES = 50;
@@ -173,6 +177,91 @@ export function buildAttributionReport(db: SignalDatabase): AttributionReport {
     components: componentNames.map((n) => toAttribution(n, n)),
     polymarketCategories: catNames.map((c) => toAttribution(c, `poly:${c}`)),
   };
+}
+
+// ---------------- reliability (edge / bands / regime / conformal / drift) ----------------
+
+export interface HorizonReliability {
+  horizon: Horizon;
+  edge7d: EdgeStats;
+  edgeAll: EdgeStats;
+  drift: DriftReport;
+  byRegime: Array<{ regime: string; n: number; agree: number; rate: number | null; lower: number | null; upper: number | null }>;
+  scoreDistribution: { p50Abs: number | null; p90Abs: number | null; maxAbs: number | null; directionalCallPct: number | null; flatRatePct: number | null; n: number };
+  band: { currentPct: number; method: string; sigmaPct: number | null; fixedPct: number; adaptiveRowsPct: number | null };
+  conformal: { available: boolean; nCalibration: number; coverage80: number | null; coverageN: number; halfWidth80AtZero: number | null; baselineHalfWidth80: number | null; beta: number | null };
+}
+
+export interface ReliabilityReport {
+  generatedAt: number;
+  minSamplesForEdge: number;
+  horizons: HorizonReliability[];
+}
+
+/**
+ * The "is there real edge?" report. Everything is measured against the honest
+ * baseline (score-sign agreement on non-flat outcomes, 50% = coin flip) with
+ * Wilson intervals, so a neutral-band artifact can never masquerade as skill.
+ */
+export function buildReliabilityReport(db: SignalDatabase, now = Date.now()): ReliabilityReport {
+  const lite = db.getEvaluationRowsLite();
+  const rows: Array<EvalLike & { regime: string | null; band_method: string | null }> = lite.map((r) => ({ ...r }));
+  const bands = currentBands(db, now);
+
+  const horizons = HORIZONS.map((h): HorizonReliability => {
+    const hz = rows.filter((r) => r.horizon === h);
+    const usable = hz.filter((r) => r.actual_direction !== 'flat' && Math.abs(r.final_score) >= 5);
+
+    const regimes = ['trend-up', 'trend-down', 'range', 'high-vol', 'unknown'].map((regime) => {
+      const inR = usable.filter((r) => (r.regime ?? 'unknown') === regime);
+      const agree = inR.filter((r) => Math.sign(r.final_score) === (r.actual_direction === 'up' ? 1 : -1)).length;
+      const [lo, hi] = inR.length > 0 ? wilsonInterval(agree, inR.length) : [null, null];
+      return { regime, n: inR.length, agree, rate: inR.length ? +(agree / inR.length).toFixed(3) : null, lower: lo === null ? null : +lo.toFixed(3), upper: hi === null ? null : +hi.toFixed(3) };
+    });
+
+    const absScores = hz.map((r) => Math.abs(r.final_score));
+    const directional = hz.filter((r) => Math.abs(r.final_score) >= 25).length;
+    const flat = hz.filter((r) => r.actual_direction === 'flat').length;
+    const adaptiveRows = hz.filter((r) => r.band_method === 'vol-adaptive-v2').length;
+
+    const interval = fitConformal(rows, h);
+    const coverage = interval ? conformalCoverage(rows, h, interval) : { n: 0, coverage80: null };
+    const atZero = interval ? interval(0) : null;
+
+    return {
+      horizon: h,
+      edge7d: computeEdgeStats(rows, h, now, 7),
+      edgeAll: computeEdgeStats(rows, h, now, 3650),
+      drift: driftReport(rows, h),
+      byRegime: regimes,
+      scoreDistribution: {
+        p50Abs: quantile(absScores, 0.5),
+        p90Abs: quantile(absScores, 0.9),
+        maxAbs: absScores.length ? Math.max(...absScores) : null,
+        directionalCallPct: hz.length ? +((directional / hz.length) * 100).toFixed(1) : null,
+        flatRatePct: hz.length ? +((flat / hz.length) * 100).toFixed(1) : null,
+        n: hz.length,
+      },
+      band: {
+        currentPct: bands[h].bandPct,
+        method: bands[h].method,
+        sigmaPct: bands[h].sigmaPct,
+        fixedPct: NEUTRAL_THRESHOLD_PCT[h],
+        adaptiveRowsPct: hz.length ? +((adaptiveRows / hz.length) * 100).toFixed(1) : null,
+      },
+      conformal: {
+        available: interval !== null,
+        nCalibration: atZero?.nCalibration ?? 0,
+        coverage80: coverage.coverage80,
+        coverageN: coverage.n,
+        halfWidth80AtZero: atZero ? +(atZero.hi80 - atZero.center).toFixed(4) : null,
+        baselineHalfWidth80: atZero?.baselineHalfWidth80 ?? null,
+        beta: atZero?.beta ?? null,
+      },
+    };
+  });
+
+  return { generatedAt: now, minSamplesForEdge: 100, horizons };
 }
 
 // ---------------- divergence performance ----------------

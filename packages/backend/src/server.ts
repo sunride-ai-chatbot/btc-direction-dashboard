@@ -2,22 +2,29 @@ import Fastify from 'fastify';
 import cors from '@fastify/cors';
 import { timingSafeEqual } from 'node:crypto';
 import { writeFileSync, renameSync, rmSync } from 'node:fs';
+import type { ServerResponse } from 'node:http';
 import { SignalDatabase } from './db/database.js';
 import { GammaPolymarketProvider } from './providers/polymarket.js';
 import { BinanceBitcoinProvider } from './providers/bitcoin.js';
 import { ManualFileEtfProvider, SosoValueEtfProvider } from './providers/etf.js';
 import { FredMacroProvider } from './providers/macro.js';
 import { CmcNewsProvider, type CmcNewsSnapshot } from './providers/cmcNews.js';
+import { PriceStream, parseRestKline } from './providers/priceStream.js';
 import { runPipeline, type PipelineProviders } from './scoring/pipeline.js';
 import { runEvaluationPass } from './scoring/evaluator.js';
-import { buildAttributionReport, buildDivergenceReport, buildEvaluationReport } from './scoring/reports.js';
+import { buildAttributionReport, buildDivergenceReport, buildEvaluationReport, buildReliabilityReport } from './scoring/reports.js';
+import { computeAllEdgeStats, driftReport, fitConformal, similarStates, type EvalLike } from './scoring/edge.js';
 import { detectDivergence } from './scoring/divergence.js';
 import { AlertEngine, DatabaseAlertSink } from './alerts/engine.js';
 import { cached } from './utils/cached.js';
+import { fetchJson } from './utils/fetchJson.js';
 import { HealthRegistry } from './utils/health.js';
 import { toCsv } from './utils/csv.js';
-import { DIVERGENCE_CONFIG, EVALUATION_CONFIG, HORIZON_WEIGHTS, NEUTRAL_THRESHOLD_PCT, REFRESH_INTERVALS_MS, SERVER_CONFIG } from './config.js';
-import { HORIZONS, type Horizon, type SignalBundle, type SignalLabel, type PolymarketSnapshot } from './types.js';
+import {
+  DIVERGENCE_CONFIG, EDGE_GATE_CONFIG, EVALUATION_CONFIG, HORIZON_WEIGHTS, NEUTRAL_THRESHOLD_PCT,
+  REFRESH_INTERVALS_MS, SERVER_CONFIG, STREAM_CONFIG,
+} from './config.js';
+import { HORIZONS, type ConformalInterval, type EdgeStats, type Horizon, type SignalBundle, type SignalLabel, type PolymarketSnapshot } from './types.js';
 
 const startedAt = Date.now();
 const db = new SignalDatabase(SERVER_CONFIG.dbPath);
@@ -43,6 +50,126 @@ const providers: PipelineProviders = {
 const alertEngine = new AlertEngine();
 alertEngine.addSink(new DatabaseAlertSink(db));
 
+// ---------- live price stream (WebSocket in, SSE out) ----------
+
+const stream = new PriceStream((candle) => {
+  try {
+    db.upsertCandle(candle);
+  } catch (err) {
+    console.error('[stream] candle persist failed:', err instanceof Error ? err.message : err);
+  }
+});
+stream.seedCandles(db.getRecentCandles(600));
+
+async function backfillCandles(): Promise<void> {
+  try {
+    const base = process.env.BINANCE_API_URL ?? 'https://api.binance.com';
+    const rows = await fetchJson<unknown[][]>(`${base}/api/v3/klines?symbol=BTCUSDT&interval=1m&limit=${STREAM_CONFIG.candleBackfillLimit}`);
+    // The last row is the still-open minute — never persist it as closed.
+    const closed = rows.slice(0, -1).map(parseRestKline).filter((c): c is NonNullable<typeof c> => c !== null);
+    stream.seedCandles(closed);
+    db.upsertCandles(closed);
+    console.log(`[stream] backfilled ${closed.length} 1m candles`);
+  } catch (err) {
+    console.error('[stream] candle backfill failed:', err instanceof Error ? err.message : err);
+  }
+}
+
+const sseClients = new Set<ServerResponse>();
+let ssePending = false;
+stream.onUpdate(() => {
+  ssePending = true;
+});
+
+function reportStreamHealth(): void {
+  const st = stream.status();
+  const connected = Object.values(st.connected).filter(Boolean).length;
+  health.report('btc-stream', {
+    freshness: st.freshness,
+    latencyMs: st.lastTickTs ? Date.now() - st.lastTickTs : null,
+    note: `${connected}/3 exchanges connected · ${st.reconnects} reconnects`,
+    failed: st.freshness === 'unavailable',
+  });
+}
+
+function streamPayload(): Record<string, unknown> {
+  const c = stream.consensus();
+  return {
+    type: 'tick',
+    price: c.price,
+    ts: c.ts,
+    exchanges: c.exchanges,
+    freshExchanges: c.freshExchanges,
+    spreadPct: c.spreadPct,
+    anomaly: c.anomaly,
+    anomalyNote: c.anomalyNote,
+    cvd: stream.cvd(),
+    streamStatus: stream.status().freshness,
+  };
+}
+
+function sseBroadcast(event: string, data: unknown): void {
+  if (sseClients.size === 0) return;
+  const frame = `event: ${event}\ndata: ${JSON.stringify(data)}\n\n`;
+  for (const res of sseClients) {
+    try {
+      res.write(frame);
+    } catch {
+      sseClients.delete(res);
+    }
+  }
+}
+
+// ---------- edge / conformal cache (refreshed after every evaluator pass) ----------
+
+interface EdgeCache {
+  rows: EvalLike[];
+  stats: Record<Horizon, EdgeStats>;
+  conformal: Record<Horizon, ((score: number) => ConformalInterval) | null>;
+  driftAlarms: Record<Horizon, boolean>;
+  updatedAt: number;
+}
+let edgeCache: EdgeCache | null = null;
+
+function refreshEdgeCache(): void {
+  try {
+    const now = Date.now();
+    const rows = db.getEvaluationRowsLite();
+    const stats = computeAllEdgeStats(rows, now);
+    const conformal = {} as EdgeCache['conformal'];
+    const driftAlarms = {} as EdgeCache['driftAlarms'];
+    for (const h of HORIZONS) {
+      conformal[h] = fitConformal(rows, h);
+      const drift = driftReport(rows, h);
+      driftAlarms[h] = drift.alarm;
+      const prev = edgeCache?.stats[h]?.status;
+      if (prev && prev !== stats[h].status) {
+        const msg = `${h} edge status changed ${prev} → ${stats[h].status} (sign agreement ${stats[h].rate === null ? 'n/a' : (stats[h].rate * 100).toFixed(0) + '%'}, n=${stats[h].n})`;
+        if (!db.hasRecentAlert('edge-status', msg, now - 6 * 3_600_000)) db.insertAlert('edge-status', msg, 'info', h, now);
+      }
+      if (drift.alarm) {
+        const msg = `${h} model drift alarm — sign agreement has been running below 50% (CUSUM ${drift.cusum})`;
+        if (!db.hasRecentAlert('model-drift', msg, now - 6 * 3_600_000)) db.insertAlert('model-drift', msg, 'warning', h, now);
+      }
+    }
+    edgeCache = { rows, stats, conformal, driftAlarms, updatedAt: now };
+  } catch (err) {
+    console.error('[edge] cache refresh failed:', err instanceof Error ? err.message : err);
+  }
+}
+
+function enrichFor(horizon: Horizon) {
+  const cache = edgeCache;
+  if (!cache) return {};
+  return {
+    edge: cache.stats[horizon],
+    conformal: cache.conformal[horizon],
+    similar: (score: number) => similarStates(cache.rows, horizon, score, Date.now()),
+  };
+}
+
+// ---------- state ----------
+
 let latestBundle: SignalBundle | null = null;
 let latestPolySnapshot: PolymarketSnapshot | null = null;
 let latestNews: CmcNewsSnapshot | null = null;
@@ -61,7 +188,11 @@ const PERSIST_INTERVAL_MS = 5 * 60_000;
 async function computeSignals(): Promise<void> {
   if (shuttingDown) return;
   try {
-    const { bundle, polySnapshot, tech } = await runPipeline(providers, stableLabels);
+    const { bundle, polySnapshot, tech } = await runPipeline(providers, stableLabels, {
+      consensus: STREAM_CONFIG.enabled ? stream.consensus() : null,
+      cvd: STREAM_CONFIG.enabled ? stream.cvd() : null,
+      enrichFor,
+    });
     latestBundle = bundle;
     latestPolySnapshot = polySnapshot;
     for (const horizon of HORIZONS) stableLabels[horizon] = bundle.signals[horizon].label;
@@ -87,6 +218,8 @@ async function computeSignals(): Promise<void> {
     }
 
     alertEngine.evaluate(bundle, polySnapshot, tech);
+    reportStreamHealth();
+    sseBroadcast('signal', { generatedAt: bundle.generatedAt, labels: Object.fromEntries(HORIZONS.map((h) => [h, { label: bundle.signals[h].label, gated: bundle.signals[h].gated, confidence: bundle.signals[h].confidence }])) });
   } catch (err) {
     console.error('[pipeline] compute failed:', err instanceof Error ? err.message : err);
   }
@@ -107,6 +240,7 @@ function evaluateDueSignals(): void {
     const { evaluated } = runEvaluationPass(db);
     lastEvaluatorRunTs = Date.now();
     if (evaluated > 0) console.log(`[evaluator] evaluated ${evaluated} signal(s); total ${db.countEvaluations()}`);
+    refreshEdgeCache();
   } catch (err) {
     console.error('[evaluator] pass failed:', err instanceof Error ? err.message : err);
   }
@@ -116,6 +250,8 @@ const app = Fastify({ logger: false, bodyLimit: 128 * 1024 * 1024 });
 await app.register(cors, {
   origin: SERVER_CONFIG.corsOrigin ? SERVER_CONFIG.corsOrigin.split(',').map((s) => s.trim()) : true,
 });
+
+const CADENCE = { polymarket: 'realtime', 'btc-price': 'realtime', 'btc-stream': 'realtime', macro: 'daily', etf: 'daily', 'cmc-news': 'realtime' } as const;
 
 // Railway health check + ops summary. 503 until the scheduler is initialized
 // and whenever SQLite stops answering. No secrets in the payload.
@@ -128,7 +264,8 @@ app.get('/health', async (_req, reply) => {
   } catch {
     databaseOk = false;
   }
-  const snap = health.snapshot({ polymarket: 'realtime', 'btc-price': 'realtime', macro: 'daily', etf: 'daily', 'cmc-news': 'realtime' });
+  reportStreamHealth();
+  const snap = health.snapshot(CADENCE);
   const ok = databaseOk && schedulersStarted && !shuttingDown;
   return reply.code(ok ? 200 : 503).send({
     status: ok ? 'ok' : 'unhealthy',
@@ -142,6 +279,26 @@ app.get('/health', async (_req, reply) => {
     lastEvaluatorRun: lastEvaluatorRunTs,
     lastSignalComputedAt: latestBundle?.generatedAt ?? null,
     providers: Object.fromEntries(snap.providers.map((p) => [p.name, p.status])),
+    stream: { ...stream.status(), sseClients: sseClients.size, candles: stream.recentCandles(600).length },
+    edge: edgeCache ? Object.fromEntries(HORIZONS.map((h) => [h, edgeCache!.stats[h].status])) : null,
+  });
+});
+
+/** Server-Sent Events: consensus price ticks (throttled) + signal recomputes. */
+app.get('/api/stream', (req, reply) => {
+  const origin = (req.headers.origin as string | undefined) ?? '*';
+  reply.raw.writeHead(200, {
+    'content-type': 'text/event-stream; charset=utf-8',
+    'cache-control': 'no-cache, no-transform',
+    connection: 'keep-alive',
+    'x-accel-buffering': 'no',
+    'access-control-allow-origin': SERVER_CONFIG.corsOrigin ? origin : '*',
+  });
+  reply.hijack();
+  reply.raw.write(`event: tick\ndata: ${JSON.stringify(streamPayload())}\n\n`);
+  sseClients.add(reply.raw);
+  req.raw.on('close', () => {
+    sseClients.delete(reply.raw);
   });
 });
 
@@ -172,9 +329,16 @@ app.get<{ Querystring: { horizon?: string; limit?: string } }>('/api/history', a
   };
 });
 
+const reliabilityReport = cached(async () => buildReliabilityReport(db), 60_000);
+
 app.get('/api/evaluation', async () => buildEvaluationReport(db));
 app.get('/api/attribution', async () => buildAttributionReport(db));
 app.get('/api/divergences', async () => buildDivergenceReport(db));
+app.get('/api/reliability', async () => reliabilityReport());
+app.get<{ Querystring: { n?: string } }>('/api/candles', async (req) => {
+  const n = Math.min(Number.parseInt(req.query.n ?? '120', 10) || 120, 600);
+  return { candles: stream.recentCandles(n), cvd: stream.cvd() };
+});
 
 app.get('/api/news', async (_req, reply) => {
   const snapshot = latestNews;
@@ -203,7 +367,8 @@ app.get('/api/news', async (_req, reply) => {
 });
 
 app.get('/api/health', async () => {
-  const snap = health.snapshot({ polymarket: 'realtime', 'btc-price': 'realtime', macro: 'daily', etf: 'daily', 'cmc-news': 'realtime' });
+  reportStreamHealth();
+  const snap = health.snapshot(CADENCE);
   return {
     ...snap,
     serverTime: Date.now(),
@@ -211,6 +376,8 @@ app.get('/api/health', async () => {
     neutralThresholdsPct: NEUTRAL_THRESHOLD_PCT,
     evaluationJobMs: EVALUATION_CONFIG.jobIntervalMs,
     lastEvaluatorRun: lastEvaluatorRunTs,
+    edgeGate: { enabled: EDGE_GATE_CONFIG.enabled, minSamples: EDGE_GATE_CONFIG.minSamples, minLowerBound: EDGE_GATE_CONFIG.minLowerBound, windowDays: EDGE_GATE_CONFIG.windowDays },
+    stream: { ...stream.status(), sseClients: sseClients.size },
   };
 });
 
@@ -299,8 +466,15 @@ app.post('/api/admin/import-db', async (req, reply) => {
 function shutdown(signal: string): void {
   if (shuttingDown) return;
   shuttingDown = true;
-  console.log(`[shutdown] ${signal} received — stopping schedulers, closing server and DB`);
+  console.log(`[shutdown] ${signal} received — stopping schedulers, stream, server and DB`);
   for (const t of timers) clearInterval(t);
+  stream.stop();
+  for (const res of sseClients) {
+    try {
+      res.end();
+    } catch {}
+  }
+  sseClients.clear();
   void app
     .close()
     .catch(() => {})
@@ -317,6 +491,29 @@ process.on('SIGTERM', () => shutdown('SIGTERM'));
 process.on('SIGINT', () => shutdown('SIGINT'));
 
 async function main(): Promise<void> {
+  refreshEdgeCache();
+  if (STREAM_CONFIG.enabled) {
+    // Backfill first so the very first signal already has order-flow (CVD) context,
+    // then give the sockets a moment so the first signal can use the consensus price.
+    await backfillCandles();
+    stream.start();
+    await new Promise<void>((resolve) => {
+      const timer = setTimeout(resolve, 3_000);
+      const off = stream.onUpdate(() => {
+        clearTimeout(timer);
+        off();
+        resolve();
+      });
+    });
+    timers.push(
+      setInterval(() => {
+        if (ssePending && sseClients.size > 0) {
+          ssePending = false;
+          sseBroadcast('tick', streamPayload());
+        }
+      }, STREAM_CONFIG.ssePushIntervalMs),
+    );
+  }
   await computeSignals();
   await refreshNews();
   evaluateDueSignals();
@@ -327,7 +524,8 @@ async function main(): Promise<void> {
   timers.push(
     setInterval(() => {
       const c = db.countsByTable();
-      console.log('[heartbeat]', JSON.stringify({ signals: c.signals, evaluations: c.evaluations, snapshots: c.polymarket_history }));
+      const st = stream.status();
+      console.log('[heartbeat]', JSON.stringify({ signals: c.signals, evaluations: c.evaluations, snapshots: c.polymarket_history, candles: c.btc_candles_1m, stream: st.freshness, sse: sseClients.size, edge: edgeCache ? Object.fromEntries(HORIZONS.map((h) => [h, edgeCache!.stats[h].status])) : null }));
     }, 3_600_000),
   );
   schedulersStarted = true;

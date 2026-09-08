@@ -78,7 +78,7 @@ export function classifyNews(text: string): Pick<CmcNewsItem, 'category' | 'rele
   }
   sentimentScore = Math.max(-100, Math.min(100, sentimentScore));
 
-  const category: NewsCategory = /\b(hack|exploit|stolen|breach|attack)\b/i.test(text)
+  const category: NewsCategory = /\b(hack\w*|exploit\w*|stolen|breach\w*|attack\w*)\b/i.test(text)
     ? 'security'
     : /\b(sec|cftc|regulat|lawsuit|legislation|court)\b/i.test(text)
       ? 'regulation'

@@ -10,7 +10,12 @@ describe('translation dictionary coverage', () => {
   });
 
   it('no Hebrew value is empty or identical to English (except proper names/tickers)', () => {
-    const allowedSame = new Set(['nav.polymarket', 'comp.polymarket', 'health.provider.polymarket', 'pm.csv', 'eval.n']);
+    const allowedSame = new Set([
+      'nav.polymarket', 'comp.polymarket', 'health.provider.polymarket', 'pm.csv', 'eval.n',
+      'news.category.defi', 'live.exchanges',
+      // numbers-only templates render identically in both languages
+      'conformal.line50', 'rel.bandSigma',
+    ]);
     for (const key of Object.keys(en) as TranslationKey[]) {
       expect(he[key], key).toBeTruthy();
       if (!allowedSame.has(key)) {
@@ -69,6 +74,11 @@ describe('dynamic explanation translation (backend templates)', () => {
     { en: '24h signal flipped NEUTRAL → BULLISH (score 31.5)', heContains: 'התהפך' },
     { en: '24h confidence moved 41 → 62', heContains: 'ביטחון' },
     { en: 'BTC 24h volume spiked 120% vs previous check', heContains: 'זינק' },
+    { en: 'Order flow: taker buying dominates (CVD +12% over 4h)', heContains: 'קנייה תוקפנית' },
+    { en: 'Order flow: taker selling dominates (CVD -9% over 1h)', heContains: 'מכירה תוקפנית' },
+    { en: 'Cross-exchange price anomaly (kraken deviates 0.80% from consensus) — data quality reduced', heContains: 'אנומליית מחיר' },
+    { en: '24h edge status changed unproven → inverse (sign agreement 23%, n=160)', heContains: 'מצב היתרון' },
+    { en: '4h model drift alarm — sign agreement has been running below 50% (CUSUM 9.5)', heContains: 'סחיפת מודל' },
   ];
 
   it('translates every known backend template into Hebrew', () => {

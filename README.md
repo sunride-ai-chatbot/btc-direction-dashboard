@@ -38,6 +38,10 @@ No API keys are required. Optional overrides (all have sane defaults):
 | `REFRESH_ETF_MS` | `3600000` | ETF file re-read |
 | `EVAL_JOB_MS` | `300000` | evaluation job cadence |
 | `NEUTRAL_PCT_1H/4H/24H/72H` | `0.15/0.35/0.8/1.5` | neutral movement bands (%) for evaluation |
+| `PRICE_STREAM` | `on` | `off` disables the exchange WebSocket stream/SSE |
+| `CVD` | `on` | `off` removes the order-flow term from technicals |
+| `ADAPTIVE_BAND` / `BAND_K` | `on` / `0.5` | volatility-adaptive neutral band and its σ multiplier |
+| `EDGE_GATE` | `on` | `off` shows labels without the "no proven edge" gate |
 | `ETF_FLOWS_FILE` | `./data/etf-flows.json` | manual ETF flow data (see below) |
 | `MACRO_EVENTS_FILE` | `./data/macro-events.json` | editable macro event calendar |
 | `POLYMARKET_GAMMA_URL` | gamma-api.polymarket.com | Polymarket API base |
@@ -84,6 +88,19 @@ A dead provider degrades confidence and is labeled in the UI; it never crashes t
 7. Each market carries a `marketInformationValue` (0–1: probability distance from 0%/100%,
    depth, time to resolution, recent activity) so near-resolved contracts cannot dominate, plus
    15-minute momentum, probability velocity, and path persistence from self-collected snapshots.
+8. **Live consensus price**: Binance/Coinbase/Kraken WebSockets feed a median consensus price
+   (streamed to the UI over SSE at `/api/stream`); a >0.5% cross-exchange spread flags a PRICE
+   ANOMALY and lowers confidence. Closed 1-minute Binance candles are persisted
+   (`btc_candles_1m`) and drive an order-flow (CVD) term inside the technical component.
+9. **Honest edge**: every evaluation stores the neutral band that judged it (`fixed-v1` legacy or
+   `vol-adaptive-v2` = 0.5×realized σ of the horizon) and the market regime. The edge measure is
+   score-sign agreement on non-flat outcomes with 95% Wilson bounds; a horizon shows a
+   directional label as actionable only when its lower bound exceeds 55% on n ≥ 100 — otherwise
+   the card says **NO PROVEN EDGE** and shows the model lean. `/api/reliability` reports edge
+   (7d / all-time), by-regime breakdown, score distribution, band info, conformal coverage and a
+   CUSUM drift alarm.
+10. **Conformal ranges**: split-conformal 80%/50% intervals for the horizon move are attached to
+    each signal, plus the empirical up-rate of similar past score states (with n).
 
 Explanations are deterministic templates filled from actual collected data — no LLM is used or
 required, and the numeric engine alone decides direction.

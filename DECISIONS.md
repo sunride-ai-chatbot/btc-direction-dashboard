@@ -207,3 +207,71 @@ Key judgment calls made while building the MVP, so they can be revisited deliber
     isolate`) so prices/percentages/tickers render correctly. Charts sit in `.chart-ltr`
     wrappers: chronology and axes are never mirrored. Language affects rendering only — the
     numerical signal path has no locale input.
+
+# Phase 5 — reliability: live consensus price, honest edge, conformal ranges (2026-09-08)
+
+## What the first week of data said (drove every decision below)
+
+49. **Finding**: 7,319 evaluations (Sep 1–8) showed the composite score never crossed ±25 at
+    1h/4h (0 directional calls), the "61% accuracy" at 4h was purely the neutral-band artifact
+    (61% of 4h moves are < ±0.35%), and score-sign agreement on non-flat outcomes was
+    23% (4h), 0/410 (24h) and 16% (72h) — inverse in one trending week. Conclusion: no proven
+    directional edge yet; any "certainty" presentation would have been dishonest. Phase 5
+    therefore builds the machinery that can prove (or disprove) edge instead of asserting it.
+
+## Live price & data quality
+
+50. **Multi-exchange WebSocket consensus** (Binance trade + kline_1m, Coinbase ticker, Kraken
+    ticker; global `WebSocket`, no dependency). Consensus = median of exchanges with a tick
+    ≤15s old; a spread or single-exchange deviation > 0.5% flags a PRICE ANOMALY that is
+    stored per signal and costs 8 confidence points. The consensus replaces the REST price
+    for `btcPrice` and for `btc_price_history` (the evaluator's truth source); indicators still
+    come from the REST hourly klines. Exponential-backoff reconnects (2s→60s).
+51. **SSE (`/api/stream`)**, throttled to 2 frames/s, pushes ticks + a `signal` event on each
+    recompute. Chosen over WebSockets for the browser because it is one-directional, proxy-
+    friendly on Railway, and `EventSource` reconnects on its own. The frontend falls back to
+    the polled price and labels it POLLING when the stream is not fresh.
+52. **1-minute candles + CVD**: closed Binance klines (taker-buy volume, field `V`/index 9) are
+    persisted in `btc_candles_1m` (schema v5) and backfilled from REST on startup (299 candles,
+    excluding the open minute). CVD ratio = (buy−sell)/(buy+sell) per 15m/1h/4h window enters
+    the *technical composite* with an internal weight of 0.25 (1h/4h), 0.1 (24h), 0 (72h)
+    — component weights unchanged; every value is stored in `technicalValues` for attribution.
+
+## Honest evaluation
+
+53. **Volatility-adaptive neutral band (evaluation v2)**: band = 0.5 × σ_h, where σ_h is the
+    realized 1-minute σ over the trailing 7 days scaled by √(horizon minutes), clamped to
+    [0.5×, 3×] the legacy fixed band. k = 0.5 reproduces the fixed bands at typical BTC vol
+    (≈0.35% at 4h) and adapts in calm/violent regimes. **Every evaluation row stores
+    `band_pct` + `band_method`** (`fixed-v1` for all pre-Phase-5 rows, backfilled in the
+    migration) so the two regimes are never mixed silently; the reliability report shows the
+    v2 share per horizon.
+54. **Regime provenance**: each evaluation stores the regime (trend-up / trend-down / range /
+    high-vol / unknown) derived from the technical values stored *at signal time*; legacy rows
+    were backfilled from their `context_json`. Reports break edge down by regime — measured,
+    not assumed.
+55. **The edge measure is score-sign agreement**, not label accuracy: among non-flat outcomes
+    where |score| ≥ 5, did sign(score) match the realized direction? Baseline 50%, evaluated
+    with 95% Wilson bounds over the last 7 days (fallback: all-time in the report). This uses
+    all 7k evaluations instead of the near-zero set of ±25 crossings, and a neutral-band
+    artifact cannot inflate it.
+56. **"NO PROVEN EDGE" gate**: a horizon's label is presented as actionable only when its
+    Wilson lower bound > 55% on n ≥ 100. Otherwise the card shows NO PROVEN EDGE with the
+    model's lean (label + score) shown small. `inverse` (upper bound < 45%) is displayed
+    but NOT acted on — one anti-correlated week is not a fade signal. The gate changes
+    **presentation only**: label, raw label, score and context are computed, stored and
+    evaluated exactly as before, so edge can be proven from the same data later. Status
+    transitions raise `edge-status` alerts.
+57. **Split conformal intervals**: per horizon, the older half of the last ≤2000 evaluations
+    fits center = a + β·score (least squares), the newer half calibrates |residual|
+    quantiles with the finite-sample (n+1) correction; 80% and 50% intervals are attached to
+    every live signal and stored in its context. The report shows realized coverage over the
+    last 200 rows (should ≈ 80%) and the score-free baseline half-width, so we can see whether
+    the score narrows the range at all. Coverage holds under exchangeability regardless of β.
+58. **Similar past states**: empirical up-rate (Wilson CI) among last-7-day non-flat outcomes
+    in the same score bucket (≤−25, −25..−10, −10..−3, −3..3, 3..10, 10..25, ≥25). Shown only
+    with n; never as a probability claim.
+59. **Drift control chart**: daily sign-agreement series with Wilson bands, plus a Bernoulli
+    CUSUM (reference 0.5, k = 0.05, h = 8) that raises a `model-drift` alert when agreement runs
+    persistently below 50%. Weights and confidence remain untouched by all of this — Phase 5
+    measures; Phase 6 (ensemble / shadow model) may act on it once edge exists.

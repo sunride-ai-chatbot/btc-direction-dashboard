@@ -1,6 +1,10 @@
-import { HORIZON_WEIGHTS, SIGNAL_THRESHOLDS, HYSTERESIS_CONFIG } from '../config.js';
+import { HORIZON_WEIGHTS, SIGNAL_THRESHOLDS, HYSTERESIS_CONFIG, EDGE_GATE_CONFIG } from '../config.js';
 import { clamp } from '../utils/indicators.js';
-import type { ComponentScore, Horizon, HorizonSignal, LiquidityContext, SignalContext, SignalLabel } from '../types.js';
+import { classifyRegime } from './edge.js';
+import type {
+  ComponentScore, ConformalInterval, EdgeStats, Horizon, HorizonSignal, LiquidityContext,
+  SignalContext, SignalLabel, SimilarStates,
+} from '../types.js';
 
 export interface ComponentSet {
   polymarket: ComponentScore;
@@ -9,6 +13,18 @@ export interface ComponentSet {
   macro: ComponentScore;
   liquidity: ComponentScore;
 }
+
+/** Optional evidence layers attached to a signal: edge gate, conformal range, similar states, data quality. */
+export interface SignalEnrichment {
+  edge?: EdgeStats | null;
+  conformal?: ((score: number) => ConformalInterval) | null;
+  similar?: ((score: number) => SimilarStates) | null;
+  priceAnomaly?: { anomaly: boolean; note: string | null; spreadPct: number | null } | null;
+  livePrice?: { source: 'consensus' | 'rest'; exchanges: number } | null;
+}
+
+/** Confidence penalty when exchanges disagree about the price (data-quality, not direction). */
+const PRICE_ANOMALY_CONFIDENCE_PENALTY = 8;
 
 export function classify(finalScore: number): SignalLabel {
   if (finalScore >= SIGNAL_THRESHOLDS.bullish) return 'BULLISH';
@@ -124,11 +140,20 @@ export function buildSignal(
   now: number,
   prevStableLabel: SignalLabel | null = null,
   sessionName = 'unknown',
+  enrich: SignalEnrichment = {},
 ): HorizonSignal {
   const { finalScore, appliedWeights } = composeFinalScore(components, horizon);
   const rawLabel = classify(finalScore);
   const label = stabilizeLabel(prevStableLabel, rawLabel, finalScore);
-  const confidence = computeConfidence(components, finalScore, liquidityCtx);
+  let confidence = computeConfidence(components, finalScore, liquidityCtx);
+  const anomaly = enrich.priceAnomaly?.anomaly === true;
+  if (anomaly) confidence = Math.max(5, confidence - PRICE_ANOMALY_CONFIDENCE_PENALTY);
+
+  const edge = enrich.edge ?? null;
+  const gated = EDGE_GATE_CONFIG.enabled ? edge === null || edge.status !== 'proven' : false;
+  const conformal = enrich.conformal ? enrich.conformal(finalScore) : null;
+  const similar = enrich.similar ? enrich.similar(finalScore) : null;
+  const regime = classifyRegime(components.technical.details as Record<string, unknown>);
 
   const polyDetails = components.polymarket.details as {
     limitedHistory?: boolean;
@@ -156,6 +181,11 @@ export function buildSignal(
     technicalValues: components.technical.details,
     macroValues: components.macro.details,
     etfValues: components.etf.details,
+    regime,
+    edgeGate: edge ? { status: edge.status, lowerBound: edge.lowerBound, n: edge.n, window: edge.window } : null,
+    conformal,
+    priceAnomaly: enrich.priceAnomaly ?? null,
+    livePrice: enrich.livePrice ?? null,
   };
 
   const weights = HORIZON_WEIGHTS[horizon];
@@ -182,6 +212,12 @@ export function buildSignal(
       for (const r of comp.risks) if (!risks.includes(r)) risks.push(r);
     }
   }
+  if (anomaly) {
+    const note = enrich.priceAnomaly?.note ?? 'exchanges disagree';
+    const msg = `Cross-exchange price anomaly (${note}) — data quality reduced`;
+    if (!risks.includes(msg)) risks.unshift(msg);
+    if (risks.length > MAX_RISKS) risks.length = MAX_RISKS;
+  }
   if (risks.length === 0) risks.push('Crypto markets can reprice sharply on unexpected news at any time');
 
   return {
@@ -198,5 +234,10 @@ export function buildSignal(
     limitedHistory,
     historyNote,
     context,
+    edge,
+    gated,
+    conformal,
+    similarStates: similar,
+    regime,
   };
 }

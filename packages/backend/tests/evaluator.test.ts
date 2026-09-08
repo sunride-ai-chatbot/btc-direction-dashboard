@@ -29,14 +29,14 @@ function makeSignal(overrides: Partial<HorizonSignal>): HorizonSignal {
 }
 
 describe('neutral movement threshold', () => {
-  it('classifies tiny moves as flat per horizon band', () => {
-    expect(actualDirection(0.08, '1h')).toBe('flat');
-    expect(actualDirection(NEUTRAL_THRESHOLD_PCT['1h'] + 0.01, '1h')).toBe('up');
-    expect(actualDirection(-(NEUTRAL_THRESHOLD_PCT['1h'] + 0.01), '1h')).toBe('down');
-    expect(actualDirection(0.5, '24h')).toBe('flat');
-    expect(actualDirection(1.0, '24h')).toBe('up');
-    expect(actualDirection(-2.0, '72h')).toBe('down');
-    expect(actualDirection(-1.0, '72h')).toBe('flat');
+  it('classifies tiny moves as flat per explicit band', () => {
+    expect(actualDirection(0.08, NEUTRAL_THRESHOLD_PCT['1h'])).toBe('flat');
+    expect(actualDirection(NEUTRAL_THRESHOLD_PCT['1h'] + 0.01, NEUTRAL_THRESHOLD_PCT['1h'])).toBe('up');
+    expect(actualDirection(-(NEUTRAL_THRESHOLD_PCT['1h'] + 0.01), NEUTRAL_THRESHOLD_PCT['1h'])).toBe('down');
+    expect(actualDirection(0.5, NEUTRAL_THRESHOLD_PCT['24h'])).toBe('flat');
+    expect(actualDirection(1.0, NEUTRAL_THRESHOLD_PCT['24h'])).toBe('up');
+    expect(actualDirection(-2.0, NEUTRAL_THRESHOLD_PCT['72h'])).toBe('down');
+    expect(actualDirection(-1.0, NEUTRAL_THRESHOLD_PCT['72h'])).toBe('flat');
   });
 
   it('scores correctness per label', () => {

@@ -46,6 +46,49 @@ export function useApi<T>(path: string, refreshMs: number): { data: T | null; er
 }
 
 import { translate, type Lang } from './i18n';
+import type { StreamTick } from './types';
+
+export interface LiveStreamState {
+  tick: StreamTick | null;
+  connected: boolean;
+  /** Direction of the last price change, for a brief flash; null when unchanged. */
+  lastMove: 'up' | 'down' | null;
+  signalVersion: number;
+}
+
+/**
+ * Server-Sent Events subscription to the backend's live consensus price.
+ * EventSource reconnects on its own; `connected` flips false meanwhile so the
+ * UI can fall back to the polled price and say so.
+ */
+export function useLiveStream(): LiveStreamState {
+  const [state, setState] = useState<LiveStreamState>({ tick: null, connected: false, lastMove: null, signalVersion: 0 });
+  const lastPriceRef = useRef<number | null>(null);
+
+  useEffect(() => {
+    if (typeof EventSource === 'undefined') return;
+    const es = new EventSource(apiUrl('/api/stream'));
+    es.onopen = () => setState((s) => ({ ...s, connected: true }));
+    es.onerror = () => setState((s) => ({ ...s, connected: false }));
+    es.addEventListener('tick', (ev) => {
+      try {
+        const tick = JSON.parse((ev as MessageEvent).data) as StreamTick;
+        const prev = lastPriceRef.current;
+        const move = tick.price !== null && prev !== null && tick.price !== prev ? (tick.price > prev ? 'up' : 'down') : null;
+        if (tick.price !== null) lastPriceRef.current = tick.price;
+        setState((s) => ({ ...s, tick, connected: true, lastMove: move ?? s.lastMove }));
+      } catch {
+        // malformed frame — ignore
+      }
+    });
+    es.addEventListener('signal', () => {
+      setState((s) => ({ ...s, signalVersion: s.signalVersion + 1 }));
+    });
+    return () => es.close();
+  }, []);
+
+  return state;
+}
 
 export function timeAgo(ts: number, lang: Lang = 'en'): string {
   const seconds = Math.floor((Date.now() - ts) / 1000);

@@ -124,6 +124,87 @@ export const DIVERGENCE_CONFIG = {
   dedupWindowMs: 2 * 3_600_000,
 };
 
+/**
+ * Live price stream (WebSocket → SSE). Consensus = median of fresh exchange
+ * prices; an exchange deviating more than anomalyPct from the median, or a
+ * cross-exchange spread above it, flags a data anomaly (lowers confidence).
+ */
+export const STREAM_CONFIG = {
+  enabled: process.env.PRICE_STREAM !== 'off',
+  binanceWs: process.env.BINANCE_WS_URL ?? 'wss://stream.binance.com:9443/stream?streams=btcusdt@trade/btcusdt@kline_1m',
+  coinbaseWs: process.env.COINBASE_WS_URL ?? 'wss://ws-feed.exchange.coinbase.com',
+  krakenWs: process.env.KRAKEN_WS_URL ?? 'wss://ws.kraken.com',
+  tickFreshMs: 15_000,
+  degradedAfterMs: 10_000,
+  downAfterMs: 60_000,
+  anomalyPct: 0.5,
+  ssePushIntervalMs: 500,
+  candleBackfillLimit: 300,
+  reconnectBaseMs: 2_000,
+  reconnectMaxMs: 60_000,
+};
+
+/**
+ * Order-flow (CVD) term inside the technical component: buy-vs-sell taker
+ * imbalance over the horizon window, scaled so a 10% imbalance ≈ ±25.
+ * Weight is INSIDE the technical composite; component weights are untouched.
+ */
+export const CVD_CONFIG = {
+  enabled: process.env.CVD !== 'off',
+  scale: 250,
+  weightByHorizon: { '1h': 0.25, '4h': 0.25, '24h': 0.1, '72h': 0 } as Record<Horizon, number>,
+  windowMinutesByHorizon: { '1h': 60, '4h': 240, '24h': 240, '72h': 240 } as Record<Horizon, number>,
+  minCandles: 15,
+};
+
+/**
+ * Volatility-adaptive neutral band (evaluation v2): band = k × realized σ of the
+ * horizon, clamped to [floor, cap] around the legacy fixed band. k = 0.5
+ * reproduces the fixed bands at typical BTC volatility and adapts elsewhere.
+ * Every evaluation row stores the band it used, so old (fixed-v1) and new
+ * (vol-adaptive-v2) rows are never confused.
+ */
+export const ADAPTIVE_BAND_CONFIG = {
+  enabled: process.env.ADAPTIVE_BAND !== 'off',
+  k: envFloat('BAND_K', 0.5),
+  lookbackHours: 24 * 7,
+  minSamples: 240,
+  floorFactor: 0.5,
+  capFactor: 3,
+};
+
+/**
+ * "No proven edge" gate: a horizon may present a directional label only when
+ * the lower Wilson bound of its score-sign agreement (non-flat outcomes,
+ * |score| ≥ minScore) exceeds minLowerBound on at least minSamples evaluations.
+ * The model's label/score are still computed, stored and evaluated — only the
+ * presentation is gated, so edge can be proven later from the same data.
+ */
+export const EDGE_GATE_CONFIG = {
+  enabled: process.env.EDGE_GATE !== 'off',
+  minSamples: 100,
+  minScore: 5,
+  minLowerBound: 0.55,
+  inverseUpperBound: 0.45,
+  windowDays: 7,
+  wilsonZ: 1.96,
+};
+
+/** Split conformal intervals: older half fits the center, newer half calibrates residuals. */
+export const CONFORMAL_CONFIG = {
+  maxWindow: 2000,
+  minSamples: 60,
+  alphas: [0.2, 0.5] as const,
+  coverageCheckSamples: 200,
+};
+
+/** Bernoulli CUSUM drift alarm on score-sign agreement (reference 0.5, allowance k). */
+export const DRIFT_CONFIG = {
+  cusumK: 0.05,
+  cusumH: 8,
+  minSamples: 100,
+};
+
 function envInt(name: string, fallback: number): number {
   const raw = process.env[name];
   if (!raw) return fallback;

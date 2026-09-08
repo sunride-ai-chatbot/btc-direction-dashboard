@@ -109,6 +109,41 @@ export interface ComponentScore {
   risks: string[];
 }
 
+export type EdgeStatus = 'proven' | 'unproven' | 'inverse' | 'insufficient';
+
+/** Score-sign agreement statistics for one horizon (the honest edge measure). */
+export interface EdgeStats {
+  horizon: Horizon;
+  status: EdgeStatus;
+  window: string;
+  n: number;
+  agree: number;
+  rate: number | null;
+  lowerBound: number | null;
+  upperBound: number | null;
+}
+
+/** Split-conformal interval for the horizon's realized % move. */
+export interface ConformalInterval {
+  center: number;
+  lo80: number;
+  hi80: number;
+  lo50: number;
+  hi50: number;
+  beta: number;
+  nCalibration: number;
+  baselineHalfWidth80: number;
+}
+
+/** Empirical up-rate among past non-flat outcomes with a similar score. */
+export interface SimilarStates {
+  bucket: string;
+  n: number;
+  upRate: number | null;
+  lowerBound: number | null;
+  upperBound: number | null;
+}
+
 export interface HorizonSignal {
   horizon: Horizon;
   /** Stabilized label (hysteresis applied) — what the UI shows. */
@@ -133,6 +168,47 @@ export interface HorizonSignal {
   historyNote: string | null;
   /** Everything needed to reproduce why this signal was generated (persisted as JSON). */
   context: SignalContext;
+  /** Edge gate: when not 'proven', the UI must not present the label as actionable. */
+  edge: EdgeStats | null;
+  gated: boolean;
+  conformal: ConformalInterval | null;
+  similarStates: SimilarStates | null;
+  regime: MarketRegime;
+}
+
+export type MarketRegime = 'trend-up' | 'trend-down' | 'range' | 'high-vol' | 'unknown';
+
+export interface Candle1m {
+  ts: number;
+  open: number;
+  high: number;
+  low: number;
+  close: number;
+  volume: number;
+  takerBuyVolume: number;
+}
+
+export interface CvdSnapshot {
+  /** (buy − sell) / (buy + sell) per window, −1..1; null when too few candles. */
+  ratio15m: number | null;
+  ratio1h: number | null;
+  ratio4h: number | null;
+  candles: number;
+}
+
+export interface ExchangeTick {
+  price: number;
+  ts: number;
+}
+
+export interface PriceConsensus {
+  price: number | null;
+  ts: number;
+  exchanges: Record<string, ExchangeTick | null>;
+  freshExchanges: number;
+  spreadPct: number | null;
+  anomaly: boolean;
+  anomalyNote: string | null;
 }
 
 export interface SignalContext {
@@ -154,6 +230,12 @@ export interface SignalContext {
   technicalValues: Record<string, unknown>;
   macroValues: Record<string, unknown>;
   etfValues: Record<string, unknown>;
+  /** Phase 5 provenance (optional for rows written before it existed). */
+  regime?: MarketRegime;
+  edgeGate?: { status: EdgeStatus; lowerBound: number | null; n: number; window: string } | null;
+  conformal?: ConformalInterval | null;
+  priceAnomaly?: { anomaly: boolean; note: string | null; spreadPct: number | null } | null;
+  livePrice?: { source: 'consensus' | 'rest'; exchanges: number } | null;
 }
 
 export interface SignalBundle {
@@ -215,6 +297,10 @@ export interface StoredEvaluation {
   confidence: number;
   final_score: number;
   session: string;
+  /** Neutral band (%) actually applied and which rule produced it — never mix v1/v2 rows blindly. */
+  band_pct: number;
+  band_method: 'fixed-v1' | 'vol-adaptive-v2';
+  regime: MarketRegime;
 }
 
 export interface DivergenceEvent {

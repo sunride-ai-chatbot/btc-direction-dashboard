@@ -2,6 +2,7 @@ import { useApi, apiUrl } from '../lib/api';
 import type { AttributionReport, DivergencePerformance, EvaluationReportPayload, HorizonEvaluationReport } from '../lib/types';
 import { useI18n, type TranslationKey } from '../lib/i18n';
 import { translateDynamic } from '../lib/dynamicHe';
+import { ReliabilityPanel } from '../components/ReliabilityPanel';
 
 function pct(v: number | null): string {
   return v === null ? '—' : `${v.toFixed(1)}%`;
@@ -160,6 +161,8 @@ export function EvaluationPage() {
       <div className="mt-3 rounded-xl border border-flat/40 bg-flat/5 p-4 text-sm text-flat">
         {t('eval.warning', { min: data.minReliableSamples, n: data.overall.totalEvaluated })}
       </div>
+
+      {hasData && <ReliabilityPanel />}
 
       {!hasData ? (
         <div className="mt-6 rounded-xl border border-border bg-card p-8 text-center text-slate-400">{t('eval.empty')}</div>

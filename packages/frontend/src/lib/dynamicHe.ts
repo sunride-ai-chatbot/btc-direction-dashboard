@@ -64,6 +64,13 @@ const RULES: Rule[] = [
   { re: /^(Overnight \(thin liquidity\)|Asian session) — signals during thin hours are less reliable$/, he: (m) => `${SESSION_HE[m[1]] ?? m[1]} — איתותים בשעות דלות נזילות מהימנים פחות` },
   { re: /^BTC trading volume unusually low right now$/, he: () => 'מחזור המסחר ב-BTC נמוך במיוחד כרגע' },
 
+  // --- order flow / data quality / edge & drift alerts ---
+  { re: /^Order flow: taker buying dominates \(CVD \+(\d+)% over (1h|4h)\)$/, he: (m) => `זרימת פקודות: קנייה תוקפנית שולטת (CVD ‎+${m[1]}% ב-${m[2] === '1h' ? 'שעה' : '4 שע׳'})` },
+  { re: /^Order flow: taker selling dominates \(CVD (-\d+)% over (1h|4h)\)$/, he: (m) => `זרימת פקודות: מכירה תוקפנית שולטת (CVD ${m[1]}% ב-${m[2] === '1h' ? 'שעה' : '4 שע׳'})` },
+  { re: /^Cross-exchange price anomaly \((.+)\) — data quality reduced$/, he: (m) => `אנומליית מחיר בין בורסות (${m[1]}) — איכות הנתונים ירדה` },
+  { re: /^(\d+h) edge status changed (\w+) → (\w+) \(sign agreement (.+?), n=(\d+)\)$/, he: (m) => `מצב היתרון ל-${m[1].replace('h', ' שע׳')} השתנה ${EDGE_HE[m[2]] ?? m[2]} ← ${EDGE_HE[m[3]] ?? m[3]} (הסכמת סימן ${m[4]}, n=${m[5]})` },
+  { re: /^(\d+h) model drift alarm — sign agreement has been running below 50% \(CUSUM ([\d.]+)\)$/, he: (m) => `התראת סחיפת מודל ל-${m[1].replace('h', ' שע׳')} — הסכמת הסימן מתחת ל-50% לאורך זמן (CUSUM ${m[2]})` },
+
   // --- engine-level ---
   { re: /^No strong directional evidence — signals are mixed or flat$/, he: () => 'אין עדות כיוונית חזקה — האיתותים מעורבים או שטוחים' },
   { re: /^Crypto markets can reprice sharply on unexpected news at any time$/, he: () => 'שוקי הקריפטו עלולים להיתמחר מחדש בחדות על חדשות בלתי צפויות בכל רגע' },
@@ -89,6 +96,13 @@ const LABEL_HE: Record<string, string> = {
   BULLISH: 'שורי',
   NEUTRAL: 'ניטרלי',
   BEARISH: 'דובי',
+};
+
+const EDGE_HE: Record<string, string> = {
+  proven: 'מוכח',
+  unproven: 'לא מוכח',
+  inverse: 'הפוך',
+  insufficient: 'אין מספיק נתונים',
 };
 
 /** Translate one backend-generated explanation string; passthrough when unmatched. */
