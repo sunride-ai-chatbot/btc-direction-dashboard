@@ -25,6 +25,7 @@ export const REFRESH_INTERVALS_MS = {
   polymarket: envInt('REFRESH_POLYMARKET_MS', 300_000),
   macro: envInt('REFRESH_MACRO_MS', 900_000),
   etf: envInt('REFRESH_ETF_MS', 3_600_000),
+  news: envInt('REFRESH_NEWS_MS', 5 * 60_000),
   signalCompute: envInt('REFRESH_SIGNAL_MS', 60_000),
 };
 

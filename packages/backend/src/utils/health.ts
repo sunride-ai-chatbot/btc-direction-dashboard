@@ -83,7 +83,9 @@ function statusOf(e: HealthEntry, cadence: 'realtime' | 'daily' | 'manual'): Pro
   if (cadence === 'manual') {
     return e.freshness === 'unavailable' ? 'UNAVAILABLE' : e.freshness === 'stale' ? 'STALE' : 'LIVE';
   }
-  if (e.freshness === 'unavailable') return 'DOWN';
+  if (e.freshness === 'unavailable') return cadence === 'daily' ? 'UNAVAILABLE' : 'DOWN';
+  // Daily series are never "LIVE": fresh trading-day data reports DAILY, aging data STALE.
+  if (cadence === 'daily') return e.freshness === 'stale' ? 'STALE' : 'DAILY';
   if (e.freshness === 'stale' || e.consecutiveFailures > 0) return 'DEGRADED';
-  return cadence === 'daily' ? 'DAILY' : 'LIVE';
+  return 'LIVE';
 }

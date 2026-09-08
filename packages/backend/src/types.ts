@@ -69,6 +69,8 @@ export interface EtfFlows {
   netFlowPrevDay: number | null;
   rolling3Day: number | null;
   rolling5Day: number | null;
+  /** Calendar date (YYYY-MM-DD) of the latest available trading-day observation. */
+  dataDate: string | null;
   source: string;
   timestamp: number;
   freshness: Freshness;

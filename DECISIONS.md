@@ -167,3 +167,43 @@ Key judgment calls made while building the MVP, so they can be revisited deliber
 41. **Frontend deployment deferred** (per instruction to prioritize the backend). The frontend
     reads `VITE_API_BASE_URL` and was verified (desktop + mobile) against the Railway backend;
     deploying it as a static site is a follow-up.
+
+# Phase 4 — real ETF flows + Hebrew/English UI (2026-09-01)
+
+42. **ETF source: SoSoValue open API** (`POST /openapi/v2/etf/historicalInflowChart`,
+    `type: us-btc-spot`) — a reputable ETF-data aggregator with a keyless machine-readable JSON
+    endpoint returning ~300 trading days of aggregate US spot-BTC ETF daily net flows. Preferred
+    over Farside (now behind a bot wall → brittle scraping) and CoinGlass/API-key services.
+    Aggregate-only: the endpoint does not break down per fund (IBIT/FBTC/…), which the scoring
+    engine does not need; per-fund collection is a possible follow-up. Override:
+    `ETF_SOURCE=manual` falls back to the legacy manual-file provider.
+43. **ETF COMPONENT TRANSITION**: unavailable → ACTIVE with the deploy at
+    **2026-09-01 ~18:2x UTC** (see the deploy commit for this phase). Every stored signal's
+    `context_json.unavailableProviders` records per-signal whether ETF participated, so
+    historical evaluation remains exactly reproducible across the transition. The ETF weight
+    and `scoreEtf()` math are byte-identical to Phase 1 — only real data now flows in.
+44. **ETF freshness semantics**: trading-day data ≤5 calendar days old ⇒ `fresh`, surfaced as
+    **DAILY** (never LIVE — schema v4 of `statusOf()` maps daily-cadence fresh→DAILY,
+    stale→STALE). On source failure the provider serves the last-known rows from the new
+    `etf_flow_history` table (schema v3, additive) marked STALE for up to 14 days, then
+    UNAVAILABLE. Zeros are never fabricated.
+45. **Self-collected ETF dataset**: every successful fetch upserts per-date rows into
+    `etf_flow_history` (date-keyed), building our own history independent of the source's
+    retention and powering the stale fallback.
+46. **i18n via a typed dictionary, not react-i18next** — ~180 UI strings across two locales in
+    one typed module (`lib/i18n.tsx`); compile-time key checking and a parity unit test beat a
+    runtime framework at this size. Language state: localStorage (`lang`) → browser-language
+    detection fallback; switching flips `<html dir/lang>` instantly, no reload.
+47. **Dynamic explanations translate by template pattern-matching** (`lib/dynamicHe.ts`):
+    the backend keeps emitting canonical English template strings (stored history is never
+    rewritten or machine-translated); the frontend matches each known template with a regex and
+    renders Hebrew with the captured numbers/titles. Chosen over structured
+    explanation-keys-in-DB because it required zero backend/schema changes mid-collection and
+    is 100% backward compatible — unknown/legacy strings pass through unchanged. A coverage
+    test pins every backend template to a Hebrew rendering; new templates must be added to both
+    files (enforced culturally + by test samples).
+48. **RTL strategy**: `dir=rtl` on the root + two CSS rules — physical `text-left/right`
+    utilities mirror under `[dir="rtl"]`, and `.font-mono` cells stay LTR (`unicode-bidi:
+    isolate`) so prices/percentages/tickers render correctly. Charts sit in `.chart-ltr`
+    wrappers: chronology and axes are never mirrored. Language affects rendering only — the
+    numerical signal path has no locale input.

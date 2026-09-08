@@ -173,3 +173,31 @@ export interface AlertRow {
   ts: number;
   acknowledged: number;
 }
+
+export type NewsCategory = 'market' | 'regulation' | 'institutional' | 'security' | 'macro' | 'defi' | 'other';
+export type NewsImpact = 'HIGH' | 'MEDIUM' | 'LOW';
+
+export interface NewsPost {
+  id: string;
+  text: string;
+  publishedTs: number;
+  fetchedAt: number;
+  url: string;
+  category: NewsCategory;
+  relevance: number;
+  sentimentScore: number;
+  direction: SignalLabel;
+  impact: NewsImpact;
+  btcReaction: { m15: number | null; h1: number | null; h4: number | null; h24: number | null };
+}
+
+export interface NewsPayload {
+  posts: NewsPost[];
+  score: number;
+  direction: SignalLabel;
+  source: string;
+  timestamp: number;
+  freshness: Freshness;
+  modelWeight: number;
+  trackingOnly: boolean;
+}

@@ -5,8 +5,9 @@ import { writeFileSync, renameSync, rmSync } from 'node:fs';
 import { SignalDatabase } from './db/database.js';
 import { GammaPolymarketProvider } from './providers/polymarket.js';
 import { BinanceBitcoinProvider } from './providers/bitcoin.js';
-import { ManualFileEtfProvider } from './providers/etf.js';
+import { ManualFileEtfProvider, SosoValueEtfProvider } from './providers/etf.js';
 import { FredMacroProvider } from './providers/macro.js';
+import { CmcNewsProvider, type CmcNewsSnapshot } from './providers/cmcNews.js';
 import { runPipeline, type PipelineProviders } from './scoring/pipeline.js';
 import { runEvaluationPass } from './scoring/evaluator.js';
 import { buildAttributionReport, buildDivergenceReport, buildEvaluationReport } from './scoring/reports.js';
@@ -27,8 +28,10 @@ console.log('[startup] row counts:', JSON.stringify(db.countsByTable()));
 
 const polymarketProvider = new GammaPolymarketProvider(db);
 const bitcoinProvider = new BinanceBitcoinProvider();
-const etfProvider = new ManualFileEtfProvider();
+const etfProvider = process.env.ETF_SOURCE === 'manual' ? new ManualFileEtfProvider() : new SosoValueEtfProvider(db);
 const macroProvider = new FredMacroProvider();
+const newsProvider = new CmcNewsProvider(db);
+const fetchNews = health.instrument('cmc-news', () => newsProvider.fetchNews());
 
 const providers: PipelineProviders = {
   polymarket: { fetchSnapshot: cached(health.instrument('polymarket', () => polymarketProvider.fetchSnapshot()), REFRESH_INTERVALS_MS.polymarket) },
@@ -42,6 +45,7 @@ alertEngine.addSink(new DatabaseAlertSink(db));
 
 let latestBundle: SignalBundle | null = null;
 let latestPolySnapshot: PolymarketSnapshot | null = null;
+let latestNews: CmcNewsSnapshot | null = null;
 // Survive restarts: hysteresis continues from the last persisted labels and the
 // persist cadence continues from the last stored signal timestamp.
 let stableLabels: Partial<Record<Horizon, SignalLabel>> = db.getLatestLabels();
@@ -88,6 +92,15 @@ async function computeSignals(): Promise<void> {
   }
 }
 
+async function refreshNews(): Promise<void> {
+  if (shuttingDown) return;
+  try {
+    latestNews = await fetchNews();
+  } catch (err) {
+    console.error('[cmc-news] refresh failed:', err instanceof Error ? err.message : err);
+  }
+}
+
 function evaluateDueSignals(): void {
   if (shuttingDown) return;
   try {
@@ -115,7 +128,7 @@ app.get('/health', async (_req, reply) => {
   } catch {
     databaseOk = false;
   }
-  const snap = health.snapshot({ polymarket: 'realtime', 'btc-price': 'realtime', macro: 'daily', etf: 'manual' });
+  const snap = health.snapshot({ polymarket: 'realtime', 'btc-price': 'realtime', macro: 'daily', etf: 'daily', 'cmc-news': 'realtime' });
   const ok = databaseOk && schedulersStarted && !shuttingDown;
   return reply.code(ok ? 200 : 503).send({
     status: ok ? 'ok' : 'unhealthy',
@@ -163,8 +176,34 @@ app.get('/api/evaluation', async () => buildEvaluationReport(db));
 app.get('/api/attribution', async () => buildAttributionReport(db));
 app.get('/api/divergences', async () => buildDivergenceReport(db));
 
+app.get('/api/news', async (_req, reply) => {
+  const snapshot = latestNews;
+  if (!snapshot) return reply.code(503).send({ error: 'CMC News has not loaded yet' });
+  const now = Date.now();
+  const reaction = (publishedTs: number, offsetMs: number): number | null => {
+    if (publishedTs + offsetMs > now) return null;
+    const entry = db.getBtcPriceAt(publishedTs, 12 * 60_000);
+    const future = db.getBtcPriceAt(publishedTs + offsetMs, 12 * 60_000);
+    return entry && future ? Math.round((((future - entry) / entry) * 100) * 1000) / 1000 : null;
+  };
+  return {
+    ...snapshot,
+    modelWeight: 0,
+    trackingOnly: true,
+    posts: snapshot.posts.map((post) => ({
+      ...post,
+      btcReaction: {
+        m15: reaction(post.publishedTs, 15 * 60_000),
+        h1: reaction(post.publishedTs, 60 * 60_000),
+        h4: reaction(post.publishedTs, 4 * 60 * 60_000),
+        h24: reaction(post.publishedTs, 24 * 60 * 60_000),
+      },
+    })),
+  };
+});
+
 app.get('/api/health', async () => {
-  const snap = health.snapshot({ polymarket: 'realtime', 'btc-price': 'realtime', macro: 'daily', etf: 'manual' });
+  const snap = health.snapshot({ polymarket: 'realtime', 'btc-price': 'realtime', macro: 'daily', etf: 'daily', 'cmc-news': 'realtime' });
   return {
     ...snap,
     serverTime: Date.now(),
@@ -206,6 +245,7 @@ const EXPORTS: Record<string, () => Array<Record<string, unknown>>> = {
   'signals.csv': () => db.exportSignalRows(),
   'evaluations.csv': () => db.exportEvaluationRows(),
   'polymarket_snapshots.csv': () => db.exportSnapshotRows(),
+  'news.csv': () => db.exportNewsRows(),
 };
 
 app.get<{ Params: { file: string } }>('/api/export/:file', async (req, reply) => {
@@ -278,8 +318,10 @@ process.on('SIGINT', () => shutdown('SIGINT'));
 
 async function main(): Promise<void> {
   await computeSignals();
+  await refreshNews();
   evaluateDueSignals();
   timers.push(setInterval(computeSignals, REFRESH_INTERVALS_MS.signalCompute));
+  timers.push(setInterval(refreshNews, REFRESH_INTERVALS_MS.news));
   timers.push(setInterval(evaluateDueSignals, EVALUATION_CONFIG.jobIntervalMs));
   timers.push(setInterval(() => db.pruneOldData(30 * 24 * 3_600_000), 6 * 3_600_000));
   timers.push(

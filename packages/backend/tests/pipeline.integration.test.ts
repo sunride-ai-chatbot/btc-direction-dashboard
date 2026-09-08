@@ -50,10 +50,10 @@ function fakeTech(): BitcoinTechnicals {
 
 function fakeEtf(available: boolean): EtfFlows {
   if (!available) {
-    return { netFlowToday: null, netFlowPrevDay: null, rolling3Day: null, rolling5Day: null, source: 'none', timestamp: now, freshness: 'unavailable', available: false };
+    return { netFlowToday: null, netFlowPrevDay: null, rolling3Day: null, rolling5Day: null, dataDate: null, source: 'none', timestamp: now, freshness: 'unavailable', available: false };
   }
   return {
-    netFlowToday: 80_000_000, netFlowPrevDay: 120_000_000, rolling3Day: 260_000_000, rolling5Day: 410_000_000,
+    netFlowToday: 80_000_000, netFlowPrevDay: 120_000_000, rolling3Day: 260_000_000, rolling5Day: 410_000_000, dataDate: '2026-08-31',
     source: 'fake-file', timestamp: now, freshness: 'fresh', available: true,
   };
 }

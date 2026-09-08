@@ -5,3 +5,23 @@
 body {
   @apply bg-surface text-slate-200 antialiased;
 }
+
+/* RTL (Hebrew): mirror physical text-alignment utilities so tables read naturally. */
+[dir='rtl'] .text-left {
+  text-align: right;
+}
+[dir='rtl'] .text-right {
+  text-align: left;
+}
+
+/* Numbers, prices, tickers and code stay LTR inside RTL text so "$77,850",
+   "+0.5pp" and "EMA200" render with correct symbol order. */
+[dir='rtl'] .font-mono {
+  direction: ltr;
+  unicode-bidi: isolate;
+}
+
+/* Charts must never be mirrored: chronology and axes stay LTR. */
+.chart-ltr {
+  direction: ltr;
+}

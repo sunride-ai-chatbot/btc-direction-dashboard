@@ -3,10 +3,12 @@ export interface FetchOptions {
   retries?: number;
   retryDelayMs?: number;
   headers?: Record<string, string>;
+  method?: string;
+  body?: string;
 }
 
 export async function fetchJson<T>(url: string, opts: FetchOptions = {}): Promise<T> {
-  const { timeoutMs = 10_000, retries = 2, retryDelayMs = 1_000, headers = {} } = opts;
+  const { timeoutMs = 10_000, retries = 2, retryDelayMs = 1_000, headers = {}, method = 'GET', body } = opts;
   let lastError: unknown;
 
   for (let attempt = 0; attempt <= retries; attempt++) {
@@ -15,6 +17,8 @@ export async function fetchJson<T>(url: string, opts: FetchOptions = {}): Promis
     try {
       const res = await fetch(url, {
         signal: controller.signal,
+        method,
+        body,
         headers: { accept: 'application/json', ...headers },
       });
       if (res.status === 429) {

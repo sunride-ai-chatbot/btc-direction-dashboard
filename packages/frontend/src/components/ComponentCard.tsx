@@ -1,28 +1,49 @@
 import { useState } from 'react';
 import type { ComponentScore } from '../lib/types';
+import { useI18n, type TranslationKey } from '../lib/i18n';
+import { translateDynamic } from '../lib/dynamicHe';
 
-function direction(score: number): { label: string; cls: string } {
-  if (score >= 10) return { label: '↑ bullish', cls: 'text-bull' };
-  if (score <= -10) return { label: '↓ bearish', cls: 'text-bear' };
-  return { label: '→ neutral', cls: 'text-flat' };
+function directionKey(score: number): TranslationKey {
+  if (score >= 10) return 'dir.bullish';
+  if (score <= -10) return 'dir.bearish';
+  return 'dir.neutral';
 }
 
-const FRESHNESS_BADGE: Record<string, { label: string; cls: string }> = {
-  fresh: { label: 'fresh', cls: 'bg-bull/10 text-bull' },
-  stale: { label: 'stale', cls: 'bg-flat/10 text-flat' },
-  unavailable: { label: 'unavailable', cls: 'bg-bear/10 text-bear' },
+function directionCls(score: number): string {
+  if (score >= 10) return 'text-bull';
+  if (score <= -10) return 'text-bear';
+  return 'text-flat';
+}
+
+const FRESHNESS_CLS: Record<string, string> = {
+  fresh: 'bg-bull/10 text-bull',
+  daily: 'bg-sky-400/10 text-sky-400',
+  stale: 'bg-flat/10 text-flat',
+  unavailable: 'bg-bear/10 text-bear',
 };
 
-export function ComponentCard({ name, comp, weightPct }: { name: string; comp: ComponentScore; weightPct: number }) {
+function fmtM(v: unknown): string {
+  if (typeof v !== 'number') return '—';
+  const m = v / 1_000_000;
+  return `${m > 0 ? '+' : ''}$${m.toFixed(0)}M`;
+}
+
+export function ComponentCard({ name, comp, weightPct, isEtf = false }: { name: string; comp: ComponentScore; weightPct: number; isEtf?: boolean }) {
   const [expanded, setExpanded] = useState(false);
-  const dir = direction(comp.score);
-  const badge = FRESHNESS_BADGE[comp.available ? comp.freshness : 'unavailable'];
+  const { t, lang } = useI18n();
+
+  // Daily-cadence data (ETF) must not present itself as live-fresh.
+  const badgeKind = !comp.available ? 'unavailable' : isEtf && comp.freshness === 'fresh' ? 'daily' : comp.freshness;
+  const badgeCls = FRESHNESS_CLS[badgeKind];
+  const badgeLabel = t(`fresh.${badgeKind}` as TranslationKey);
+
+  const etfDetails = comp.details as { netFlowToday?: number | null; rolling3Day?: number | null; rolling5Day?: number | null; dataDate?: string | null };
 
   return (
     <div className="rounded-xl border border-border bg-card p-4">
       <div className="flex items-center justify-between">
         <div className="text-sm font-semibold text-slate-200">{name}</div>
-        <span className={`rounded-full px-2 py-0.5 text-[10px] font-medium uppercase ${badge.cls}`}>{badge.label}</span>
+        <span className={`rounded-full px-2 py-0.5 text-[10px] font-medium uppercase ${badgeCls}`}>{badgeLabel}</span>
       </div>
       {comp.available ? (
         <>
@@ -31,22 +52,41 @@ export function ComponentCard({ name, comp, weightPct }: { name: string; comp: C
               {comp.score > 0 ? '+' : ''}
               {comp.score.toFixed(0)}
             </span>
-            <span className={`text-sm font-medium ${dir.cls}`}>{dir.label}</span>
+            <span className={`text-sm font-medium ${directionCls(comp.score)}`}>{t(directionKey(comp.score))}</span>
           </div>
-          <div className="mt-1 text-xs text-slate-500">weight {weightPct}%</div>
-          {comp.reasons[0] && <div className="mt-2 text-xs text-slate-400">{comp.reasons[0]}</div>}
+          <div className="mt-1 text-xs text-slate-500">{t('comp.weight', { pct: weightPct })}</div>
+          {isEtf && typeof etfDetails.netFlowToday === 'number' ? (
+            <div className="mt-2 space-y-0.5 text-xs text-slate-300">
+              <div>
+                {t('etf.latest')}: <span className="font-mono">{fmtM(etfDetails.netFlowToday)}</span>
+              </div>
+              <div>
+                {t('etf.threeDay')}: <span className="font-mono">{fmtM(etfDetails.rolling3Day)}</span> · {t('etf.fiveDay')}:{' '}
+                <span className="font-mono">{fmtM(etfDetails.rolling5Day)}</span>
+              </div>
+              {etfDetails.dataDate && (
+                <div className="text-slate-500">
+                  {t('etf.updated')}: <span className="font-mono">{etfDetails.dataDate}</span>
+                </div>
+              )}
+            </div>
+          ) : (
+            comp.reasons[0] && <div className="mt-2 text-xs text-slate-400">{translateDynamic(comp.reasons[0], lang)}</div>
+          )}
         </>
       ) : (
-        <div className="mt-2 text-sm text-slate-500">{comp.risks[0] ?? 'Source unavailable'}</div>
+        <div className="mt-2 text-sm text-slate-500">
+          {comp.risks[0] ? translateDynamic(comp.risks[0], lang) : t('comp.sourceUnavailable')}
+        </div>
       )}
       <button
         onClick={() => setExpanded(!expanded)}
         className="mt-3 text-xs text-slate-500 underline-offset-2 hover:text-slate-300 hover:underline"
       >
-        {expanded ? 'hide raw data' : 'raw data'}
+        {expanded ? t('comp.hideRawData') : t('comp.rawData')}
       </button>
       {expanded && (
-        <pre className="mt-2 max-h-48 overflow-auto rounded bg-surface p-2 text-[10px] leading-relaxed text-slate-400">
+        <pre className="chart-ltr mt-2 max-h-48 overflow-auto rounded bg-surface p-2 text-start text-[10px] leading-relaxed text-slate-400">
           {JSON.stringify(comp.details, null, 2)}
         </pre>
       )}

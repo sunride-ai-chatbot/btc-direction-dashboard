@@ -1,5 +1,7 @@
 import { useApi, apiUrl } from '../lib/api';
 import type { AttributionReport, DivergencePerformance, EvaluationReportPayload, HorizonEvaluationReport } from '../lib/types';
+import { useI18n, type TranslationKey } from '../lib/i18n';
+import { translateDynamic } from '../lib/dynamicHe';
 
 function pct(v: number | null): string {
   return v === null ? '—' : `${v.toFixed(1)}%`;
@@ -9,49 +11,61 @@ function ret(v: number | null): string {
   return v === null ? '—' : `${v > 0 ? '+' : ''}${v.toFixed(2)}%`;
 }
 
+const COMPONENT_KEY: Record<string, TranslationKey> = {
+  polymarket: 'comp.polymarket',
+  technical: 'comp.technical',
+  etf: 'comp.etf',
+  macro: 'comp.macro',
+  liquidity: 'comp.liquidity',
+  'btc-direct': 'cat.btc-direct',
+  fed: 'cat.fed',
+  inflation: 'cat.inflation',
+  geopolitical: 'cat.geopolitical',
+};
+
 function ReportCard({ r }: { r: HorizonEvaluationReport }) {
+  const { t } = useI18n();
   return (
     <div className="rounded-xl border border-border bg-card p-5">
       <div className="flex items-baseline justify-between">
-        <span className="font-mono text-lg font-bold">{r.horizon === 'overall' ? 'OVERALL' : r.horizon.toUpperCase()}</span>
+        <span className="font-mono text-lg font-bold">
+          {r.horizon === 'overall' ? t('eval.overall') : t(`horizon.${r.horizon}` as TranslationKey)}
+        </span>
         <span className={`text-xs font-semibold ${r.reliable ? 'text-slate-500' : 'text-flat'}`}>
-          n = {r.totalEvaluated}
-          {!r.reliable && ' · unreliable'}
+          {t('eval.n', { n: r.totalEvaluated })} {!r.reliable && t('eval.unreliable')}
         </span>
       </div>
       <dl className="mt-3 grid grid-cols-2 gap-x-4 gap-y-1.5 text-sm">
-        <dt className="text-slate-400">Directional accuracy</dt>
+        <dt className="text-slate-400">{t('eval.directionalAccuracy')}</dt>
         <dd className="text-right font-mono font-semibold">{pct(r.directionalAccuracy)}</dd>
-        <dt className="text-slate-500 text-xs pt-0.5">…without hysteresis (raw)</dt>
-        <dd className="text-right font-mono text-xs text-slate-500 pt-0.5">{pct(r.rawDirectionalAccuracy)}</dd>
-        <dt className="text-slate-400">Bullish accuracy</dt>
+        <dt className="pt-0.5 text-xs text-slate-500">{t('eval.rawAccuracy')}</dt>
+        <dd className="pt-0.5 text-right font-mono text-xs text-slate-500">{pct(r.rawDirectionalAccuracy)}</dd>
+        <dt className="text-slate-400">{t('eval.bullishAccuracy')}</dt>
         <dd className="text-right font-mono text-bull">{pct(r.bullishAccuracy)}</dd>
-        <dt className="text-slate-400">Bearish accuracy</dt>
+        <dt className="text-slate-400">{t('eval.bearishAccuracy')}</dt>
         <dd className="text-right font-mono text-bear">{pct(r.bearishAccuracy)}</dd>
-        <dt className="text-slate-400">Neutral accuracy</dt>
+        <dt className="text-slate-400">{t('eval.neutralAccuracy')}</dt>
         <dd className="text-right font-mono text-flat">{pct(r.neutralAccuracy)}</dd>
-        <dt className="text-slate-400">Avg return after bullish</dt>
+        <dt className="text-slate-400">{t('eval.avgReturnBullish')}</dt>
         <dd className="text-right font-mono">{ret(r.avgReturnAfterBullish)}</dd>
-        <dt className="text-slate-400">Avg return after bearish</dt>
+        <dt className="text-slate-400">{t('eval.avgReturnBearish')}</dt>
         <dd className="text-right font-mono">{ret(r.avgReturnAfterBearish)}</dd>
       </dl>
 
-      <div className="mt-4 text-xs font-semibold uppercase tracking-widest text-slate-500">
-        Win rate by model confidence
-      </div>
+      <div className="mt-4 text-xs font-semibold uppercase tracking-widest text-slate-500">{t('eval.winRate')}</div>
       <table className="mt-2 w-full text-xs">
-        <thead className="text-left text-slate-500">
+        <thead className="text-slate-500">
           <tr>
-            <th className="py-1">Confidence</th>
+            <th className="py-1 text-left">{t('eval.confidence')}</th>
             <th className="py-1 text-right">N</th>
-            <th className="py-1 text-right">Accuracy</th>
-            <th className="py-1 text-right">Avg return</th>
+            <th className="py-1 text-right">{t('eval.accuracy')}</th>
+            <th className="py-1 text-right">{t('eval.avgReturn')}</th>
           </tr>
         </thead>
         <tbody>
           {r.byConfidenceBucket.map((b) => (
             <tr key={b.bucket} className="border-t border-border">
-              <td className="py-1 font-mono">{b.bucket}</td>
+              <td className="py-1 text-left font-mono">{b.bucket}</td>
               <td className="py-1 text-right font-mono">{b.total}</td>
               <td className="py-1 text-right font-mono">{pct(b.accuracy)}</td>
               <td className="py-1 text-right font-mono">{b.avgReturn === null ? '—' : `${b.avgReturn.toFixed(2)}%`}</td>
@@ -62,14 +76,14 @@ function ReportCard({ r }: { r: HorizonEvaluationReport }) {
 
       {r.bySession.some((s) => s.total > 0) && (
         <>
-          <div className="mt-4 text-xs font-semibold uppercase tracking-widest text-slate-500">By market session</div>
+          <div className="mt-4 text-xs font-semibold uppercase tracking-widest text-slate-500">{t('eval.bySession')}</div>
           <table className="mt-2 w-full text-xs">
             <tbody>
               {r.bySession
                 .filter((s) => s.total > 0)
                 .map((s) => (
                   <tr key={s.session} className="border-t border-border">
-                    <td className="py-1">{s.session}</td>
+                    <td className="py-1 text-left">{t(`session.${s.session}` as TranslationKey)}</td>
                     <td className="py-1 text-right font-mono">n={s.total}</td>
                     <td className="py-1 text-right font-mono">{pct(s.accuracy)}</td>
                   </tr>
@@ -83,27 +97,30 @@ function ReportCard({ r }: { r: HorizonEvaluationReport }) {
 }
 
 function AttributionTable({ title, rows }: { title: string; rows: AttributionReport['components'] }) {
+  const { t } = useI18n();
   const withData = rows.filter((r) => r.samples > 0);
   if (withData.length === 0) return null;
   return (
     <div className="rounded-xl border border-border bg-card p-5">
       <div className="text-sm font-semibold">{title}</div>
       <table className="mt-2 w-full text-xs">
-        <thead className="text-left text-slate-500">
+        <thead className="text-slate-500">
           <tr>
-            <th className="py-1">Input</th>
+            <th className="py-1 text-left">{t('eval.input')}</th>
             <th className="py-1 text-right">N</th>
-            <th className="py-1 text-right" title="How often this input's direction matched what BTC actually did">
-              Direction agreement
+            <th className="py-1 text-right" title={t('eval.dirAgreementTooltip')}>
+              {t('eval.dirAgreement')}
             </th>
-            <th className="py-1 text-right">Avg score (correct)</th>
-            <th className="py-1 text-right">Avg score (wrong)</th>
+            <th className="py-1 text-right">{t('eval.avgScoreCorrect')}</th>
+            <th className="py-1 text-right">{t('eval.avgScoreWrong')}</th>
           </tr>
         </thead>
         <tbody>
           {withData.map((c) => (
             <tr key={c.component} className="border-t border-border">
-              <td className="py-1 font-medium">{c.component}</td>
+              <td className="py-1 text-left font-medium">
+                {COMPONENT_KEY[c.component] ? t(COMPONENT_KEY[c.component]) : c.component}
+              </td>
               <td className="py-1 text-right font-mono">{c.samples}</td>
               <td className="py-1 text-right font-mono">{pct(c.directionAgreementPct)}</td>
               <td className="py-1 text-right font-mono">{c.avgScoreWhenCorrect?.toFixed(1) ?? '—'}</td>
@@ -117,41 +134,35 @@ function AttributionTable({ title, rows }: { title: string; rows: AttributionRep
 }
 
 export function EvaluationPage() {
+  const { t, lang } = useI18n();
   const { data } = useApi<EvaluationReportPayload>('/api/evaluation', 120_000);
   const { data: attribution } = useApi<AttributionReport>('/api/attribution', 120_000);
   const { data: divergences } = useApi<DivergencePerformance>('/api/divergences', 120_000);
 
-  if (!data) return <div className="mt-24 text-center text-slate-500">Loading evaluation…</div>;
+  if (!data) return <div className="mt-24 text-center text-slate-500">{t('eval.loading')}</div>;
 
   const hasData = data.overall.totalEvaluated > 0;
 
   return (
     <div className="mx-auto max-w-5xl">
       <div className="flex flex-wrap items-baseline justify-between gap-2">
-        <h2 className="text-xl font-bold">Model evaluation</h2>
+        <h2 className="text-xl font-bold">{t('eval.title')}</h2>
         <div className="flex gap-3 text-xs">
-          <a className="text-slate-400 underline underline-offset-2 hover:text-slate-200" href={apiUrl("/api/export/evaluations.csv")}>
+          <a className="text-slate-400 underline underline-offset-2 hover:text-slate-200" href={apiUrl('/api/export/evaluations.csv')}>
             evaluations.csv
           </a>
-          <a className="text-slate-400 underline underline-offset-2 hover:text-slate-200" href={apiUrl("/api/export/signals.csv")}>
+          <a className="text-slate-400 underline underline-offset-2 hover:text-slate-200" href={apiUrl('/api/export/signals.csv')}>
             signals.csv
           </a>
         </div>
       </div>
 
       <div className="mt-3 rounded-xl border border-flat/40 bg-flat/5 p-4 text-sm text-flat">
-        ⚠ Model performance is statistically unreliable until sufficient historical signals have been collected
-        (≥{data.minReliableSamples} per horizon). Current sample:{' '}
-        <span className="font-mono font-bold">{data.overall.totalEvaluated} evaluated signals</span>. Confidence shown
-        everywhere is <span className="font-semibold">model confidence</span>, not the probability of BTC rising — this
-        page exists to test whether higher confidence actually corresponds to higher accuracy before any calibration.
+        {t('eval.warning', { min: data.minReliableSamples, n: data.overall.totalEvaluated })}
       </div>
 
       {!hasData ? (
-        <div className="mt-6 rounded-xl border border-border bg-card p-8 text-center text-slate-400">
-          No signals are old enough to evaluate yet. The evaluator runs automatically every few minutes; 1h signals
-          become evaluable an hour after they are stored (72h signals after three days).
-        </div>
+        <div className="mt-6 rounded-xl border border-border bg-card p-8 text-center text-slate-400">{t('eval.empty')}</div>
       ) : (
         <>
           <div className="mt-6">
@@ -167,32 +178,29 @@ export function EvaluationPage() {
 
       {attribution && attribution.totalEvaluated > 0 && (
         <div className="mt-8">
-          <h3 className="text-lg font-bold">Component attribution</h3>
+          <h3 className="text-lg font-bold">{t('eval.attribution')}</h3>
           <p className="mt-1 text-sm text-slate-400">
-            When predictions were correct, which inputs were most useful? Measurement only — weights are not being
-            adjusted from this data{attribution.reliable ? '' : ' (sample still too small to act on)'}.
+            {t('eval.attributionNote', { small: attribution.reliable ? '' : t('eval.attributionSmall') })}
           </p>
           <div className="mt-3 grid grid-cols-1 gap-4 lg:grid-cols-2">
-            <AttributionTable title="Signal components" rows={attribution.components} />
-            <AttributionTable title="Polymarket subcategories" rows={attribution.polymarketCategories} />
+            <AttributionTable title={t('eval.components')} rows={attribution.components} />
+            <AttributionTable title={t('eval.subcategories')} rows={attribution.polymarketCategories} />
           </div>
         </div>
       )}
 
       {divergences && divergences.events.length > 0 && (
         <div className="mt-8">
-          <h3 className="text-lg font-bold">Polymarket / price divergences</h3>
-          <p className="mt-1 text-sm text-slate-400">
-            Detected divergence events and what BTC actually did afterwards. These do not move the score yet.
-          </p>
+          <h3 className="text-lg font-bold">{t('eval.divTitle')}</h3>
+          <p className="mt-1 text-sm text-slate-400">{t('eval.divNote')}</p>
           <div className="mt-3 grid grid-cols-1 gap-4 sm:grid-cols-2">
             {divergences.summary
               .filter((s) => s.total > 0)
               .map((s) => (
                 <div key={s.kind} className="rounded-xl border border-border bg-card p-4 text-sm">
-                  <div className="font-semibold">{s.kind === 'bullish-divergence' ? '↑ Bullish divergences' : '↓ Bearish divergences'}</div>
+                  <div className="font-semibold">{s.kind === 'bullish-divergence' ? t('eval.divBullish') : t('eval.divBearish')}</div>
                   <div className="mt-1 text-slate-400">
-                    {s.total} detected · {s.resolved} resolved · agreement {pct(s.agreementPct)}
+                    {t('eval.divStats', { total: s.total, resolved: s.resolved, pct: pct(s.agreementPct) })}
                   </div>
                 </div>
               ))}
@@ -200,8 +208,8 @@ export function EvaluationPage() {
           <ul className="mt-3 space-y-1.5">
             {divergences.events.slice(0, 8).map((e) => (
               <li key={e.id} className="rounded-lg border border-border bg-card px-3 py-2 text-xs text-slate-300">
-                {e.message}
-                <span className="ml-2 text-slate-500">
+                {translateDynamic(e.message, lang)}
+                <span className="mx-2 text-slate-500">
                   → 4h: {ret(e.outcome4h)} · 24h: {ret(e.outcome24h)}
                 </span>
               </li>

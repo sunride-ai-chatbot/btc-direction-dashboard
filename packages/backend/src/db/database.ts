@@ -2,6 +2,7 @@ import { DatabaseSync } from 'node:sqlite';
 import { mkdirSync } from 'node:fs';
 import { dirname } from 'node:path';
 import type { Horizon, HorizonSignal, SignalLabel, StoredEvaluation, DivergenceEvent } from '../types.js';
+import type { CmcNewsItem } from '../providers/cmcNews.js';
 
 /**
  * Versioned schema via PRAGMA user_version.
@@ -116,6 +117,118 @@ export class SignalDatabase {
         PRAGMA user_version = 2;
       `);
     }
+
+    // v3 — self-collected daily ETF flow history (additive; touches no existing tables)
+    if (this.userVersion < 3) {
+      this.db.exec(`
+        CREATE TABLE etf_flow_history (
+          date TEXT PRIMARY KEY,
+          net_flow REAL NOT NULL,
+          source TEXT NOT NULL,
+          fetched_at INTEGER NOT NULL
+        );
+        PRAGMA user_version = 3;
+      `);
+    }
+
+    // v4 — observational CMC News feed. It is deliberately separate from signals/scoring.
+    if (this.userVersion < 4) {
+      this.db.exec(`
+        CREATE TABLE news_items (
+          post_id TEXT PRIMARY KEY,
+          published_ts INTEGER NOT NULL,
+          fetched_at INTEGER NOT NULL,
+          source TEXT NOT NULL,
+          url TEXT NOT NULL,
+          text TEXT NOT NULL,
+          category TEXT NOT NULL,
+          relevance REAL NOT NULL,
+          sentiment_score REAL NOT NULL,
+          direction TEXT NOT NULL,
+          impact TEXT NOT NULL
+        );
+        CREATE INDEX idx_news_published ON news_items(published_ts DESC);
+        PRAGMA user_version = 4;
+      `);
+    }
+  }
+
+  // ---------- CMC news (observational only; not part of model scoring) ----------
+
+  upsertNewsItems(rows: CmcNewsItem[]): void {
+    const stmt = this.db.prepare(
+      `INSERT INTO news_items
+       (post_id, published_ts, fetched_at, source, url, text, category, relevance, sentiment_score, direction, impact)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+       ON CONFLICT(post_id) DO UPDATE SET
+         fetched_at = excluded.fetched_at,
+         text = excluded.text,
+         category = excluded.category,
+         relevance = excluded.relevance,
+         sentiment_score = excluded.sentiment_score,
+         direction = excluded.direction,
+         impact = excluded.impact`,
+    );
+    this.db.exec('BEGIN');
+    try {
+      for (const row of rows) {
+        stmt.run(
+          row.id, row.publishedTs, row.fetchedAt, 'CMC News (@CMC_News)', row.url, row.text,
+          row.category, row.relevance, row.sentimentScore, row.direction, row.impact,
+        );
+      }
+      this.db.exec('COMMIT');
+    } catch (err) {
+      this.db.exec('ROLLBACK');
+      throw err;
+    }
+  }
+
+  getRecentNewsItems(limit: number): CmcNewsItem[] {
+    const rows = this.db
+      .prepare('SELECT * FROM news_items ORDER BY published_ts DESC LIMIT ?')
+      .all(limit) as unknown as NewsItemRow[];
+    return rows.map((row) => ({
+      id: row.post_id,
+      text: row.text,
+      publishedTs: row.published_ts,
+      fetchedAt: row.fetched_at,
+      url: row.url,
+      category: row.category as CmcNewsItem['category'],
+      relevance: row.relevance,
+      sentimentScore: row.sentiment_score,
+      direction: row.direction as CmcNewsItem['direction'],
+      impact: row.impact as CmcNewsItem['impact'],
+    }));
+  }
+
+  exportNewsRows(): Array<Record<string, unknown>> {
+    return this.db
+      .prepare('SELECT post_id, published_ts, fetched_at, source, url, category, relevance, sentiment_score, direction, impact, text FROM news_items ORDER BY published_ts ASC')
+      .all() as unknown as Array<Record<string, unknown>>;
+  }
+
+  // ---------- etf flows ----------
+
+  upsertEtfFlows(rows: Array<{ date: string; netFlow: number; source: string }>, fetchedAt: number): void {
+    const stmt = this.db.prepare(
+      'INSERT INTO etf_flow_history (date, net_flow, source, fetched_at) VALUES (?, ?, ?, ?) ON CONFLICT(date) DO UPDATE SET net_flow = excluded.net_flow, source = excluded.source, fetched_at = excluded.fetched_at',
+    );
+    this.db.exec('BEGIN');
+    try {
+      for (const r of rows) stmt.run(r.date, r.netFlow, r.source, fetchedAt);
+      this.db.exec('COMMIT');
+    } catch (err) {
+      this.db.exec('ROLLBACK');
+      throw err;
+    }
+  }
+
+  /** Newest-first daily ETF flow rows. */
+  getRecentEtfFlows(limit: number): Array<{ date: string; net_flow: number; source: string; fetched_at: number }> {
+    return this.db
+      .prepare('SELECT date, net_flow, source, fetched_at FROM etf_flow_history ORDER BY date DESC LIMIT ?')
+      .all(limit) as unknown as Array<{ date: string; net_flow: number; source: string; fetched_at: number }>;
   }
 
   // ---------- polymarket snapshots ----------
@@ -338,7 +451,7 @@ export class SignalDatabase {
 
   /** Row counts for every production table — used by /health and import verification. */
   countsByTable(): Record<string, number> {
-    const tables = ['signals', 'evaluations', 'divergences', 'polymarket_history', 'btc_price_history', 'alerts'];
+    const tables = ['signals', 'evaluations', 'divergences', 'polymarket_history', 'btc_price_history', 'alerts', 'news_items'];
     const out: Record<string, number> = {};
     for (const t of tables) {
       out[t] = (this.db.prepare(`SELECT COUNT(*) AS c FROM ${t}`).get() as { c: number }).c;
@@ -393,4 +506,18 @@ export interface AlertRow {
   horizon: Horizon | null;
   ts: number;
   acknowledged: number;
+}
+
+interface NewsItemRow {
+  post_id: string;
+  published_ts: number;
+  fetched_at: number;
+  source: string;
+  url: string;
+  text: string;
+  category: string;
+  relevance: number;
+  sentiment_score: number;
+  direction: string;
+  impact: string;
 }

@@ -260,7 +260,7 @@ export function scoreEtf(etf: EtfFlows): ComponentScore {
     else if (m < -100) reasons.push(`ETF 5-day net outflows $${m.toFixed(0)}M`);
   }
   if (score < -10) risks.push('ETF flows negative — institutional demand weak');
-  if (etf.freshness === 'stale') risks.push('ETF flow data is stale (manual source not recently updated)');
+  if (etf.freshness === 'stale') risks.push('ETF flow data is stale (source not recently updated)');
 
   return {
     score,
@@ -272,6 +272,7 @@ export function scoreEtf(etf: EtfFlows): ComponentScore {
       netFlowPrevDay: etf.netFlowPrevDay,
       rolling3Day: etf.rolling3Day,
       rolling5Day: etf.rolling5Day,
+      dataDate: etf.dataDate,
       source: etf.source,
     },
     reasons,

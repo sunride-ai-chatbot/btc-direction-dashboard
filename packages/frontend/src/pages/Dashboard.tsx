@@ -3,17 +3,20 @@ import { useApi } from '../lib/api';
 import { HORIZONS, type Horizon, type SignalBundle, type AlertRow, type DivergencePerformance } from '../lib/types';
 import { SignalCard } from '../components/SignalCard';
 import { ComponentCard } from '../components/ComponentCard';
+import { useI18n, type TranslationKey } from '../lib/i18n';
+import { translateDynamic } from '../lib/dynamicHe';
 
-const COMPONENT_LABELS: Array<{ key: keyof SignalBundle['signals']['24h']['components']; label: string }> = [
-  { key: 'polymarket', label: 'Polymarket' },
-  { key: 'technical', label: 'BTC Technicals' },
-  { key: 'etf', label: 'ETF Flows' },
-  { key: 'macro', label: 'Macro' },
-  { key: 'liquidity', label: 'Liquidity / Session' },
+const COMPONENT_LABELS: Array<{ key: keyof SignalBundle['signals']['24h']['components']; labelKey: TranslationKey }> = [
+  { key: 'polymarket', labelKey: 'comp.polymarket' },
+  { key: 'technical', labelKey: 'comp.technical' },
+  { key: 'etf', labelKey: 'comp.etf' },
+  { key: 'macro', labelKey: 'comp.macro' },
+  { key: 'liquidity', labelKey: 'comp.liquidity' },
 ];
 
 export function Dashboard() {
   const [horizon, setHorizon] = useState<Horizon>('24h');
+  const { t, lang } = useI18n();
   const { data: bundle, error } = useApi<SignalBundle>('/api/signal', 30_000);
   const { data: alertData } = useApi<{ alerts: AlertRow[] }>('/api/alerts', 60_000);
   const { data: divergenceData } = useApi<DivergencePerformance>('/api/divergences', 120_000);
@@ -21,15 +24,16 @@ export function Dashboard() {
   if (error && !bundle) {
     return (
       <div className="mx-auto mt-20 max-w-md rounded-xl border border-border bg-card p-6 text-center">
-        <div className="text-lg font-semibold text-slate-200">Backend not reachable</div>
+        <div className="text-lg font-semibold text-slate-200">{t('dash.backendDown')}</div>
         <div className="mt-2 text-sm text-slate-400">
-          Start it with <code className="rounded bg-surface px-1.5 py-0.5 font-mono text-xs">npm run dev</code> — retrying automatically.
+          {t('dash.backendDownHint', { cmd: '' })}
+          <code className="rounded bg-surface px-1.5 py-0.5 font-mono text-xs">npm run dev</code>
         </div>
       </div>
     );
   }
   if (!bundle) {
-    return <div className="mt-24 text-center text-slate-500">Loading signals…</div>;
+    return <div className="mt-24 text-center text-slate-500">{t('dash.loading')}</div>;
   }
 
   const signal = bundle.signals[horizon];
@@ -40,24 +44,20 @@ export function Dashboard() {
     <div className="mx-auto max-w-3xl">
       {recentDivergences.length > 0 && (
         <div className="mb-4 rounded-xl border border-sky-400/40 bg-sky-400/5 p-4">
-          <div className="text-xs font-semibold uppercase tracking-widest text-sky-400">
-            Polymarket / price divergence detected
-          </div>
+          <div className="text-xs font-semibold uppercase tracking-widest text-sky-400">{t('dash.divergenceTitle')}</div>
           <ul className="mt-1.5 space-y-1">
             {recentDivergences.map((d) => (
               <li key={d.id} className="text-sm text-slate-300">
-                {d.message}
+                {translateDynamic(d.message, lang)}
               </li>
             ))}
           </ul>
-          <div className="mt-1.5 text-xs text-slate-500">
-            Informational only — divergences are tracked for performance, they do not move the score yet.
-          </div>
+          <div className="mt-1.5 text-xs text-slate-500">{t('dash.divergenceNote')}</div>
         </div>
       )}
       <SignalCard signal={signal} />
 
-      <div className="mt-6 flex justify-center gap-2">
+      <div className="mt-6 flex flex-wrap justify-center gap-2">
         {HORIZONS.map((h) => (
           <button
             key={h}
@@ -68,18 +68,18 @@ export function Dashboard() {
                 : 'bg-card text-slate-400 ring-1 ring-border hover:text-slate-200'
             }`}
           >
-            {h.toUpperCase()}
+            {t(`horizon.${h}`)}
           </button>
         ))}
       </div>
 
       {unackedAlerts.length > 0 && (
         <div className="mt-6 rounded-xl border border-flat/30 bg-flat/5 p-4">
-          <div className="text-xs font-semibold uppercase tracking-widest text-flat">Recent alerts</div>
+          <div className="text-xs font-semibold uppercase tracking-widest text-flat">{t('dash.recentAlerts')}</div>
           <ul className="mt-2 space-y-1">
             {unackedAlerts.map((a) => (
               <li key={a.id} className="text-sm text-slate-300">
-                {a.message}
+                {translateDynamic(a.message, lang)}
               </li>
             ))}
           </ul>
@@ -87,19 +87,18 @@ export function Dashboard() {
       )}
 
       <div className="mt-6 grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-3">
-        {COMPONENT_LABELS.map(({ key, label }) => (
+        {COMPONENT_LABELS.map(({ key, labelKey }) => (
           <ComponentCard
             key={key}
-            name={label}
+            name={t(labelKey)}
             comp={signal.components[key]}
             weightPct={Math.round(signal.components[key].weight * 100)}
+            isEtf={key === 'etf'}
           />
         ))}
       </div>
 
-      <p className="mt-8 text-center text-xs text-slate-600">
-        This tool analyzes market signals and does not constitute financial advice.
-      </p>
+      <p className="mt-8 text-center text-xs text-slate-600">{t('dash.disclaimer')}</p>
     </div>
   );
 }

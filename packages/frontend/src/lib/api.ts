@@ -45,15 +45,17 @@ export function useApi<T>(path: string, refreshMs: number): { data: T | null; er
   return { data, error, lastFetched };
 }
 
-export function timeAgo(ts: number): string {
+import { translate, type Lang } from './i18n';
+
+export function timeAgo(ts: number, lang: Lang = 'en'): string {
   const seconds = Math.floor((Date.now() - ts) / 1000);
-  if (seconds < 5) return 'just now';
-  if (seconds < 60) return `${seconds}s ago`;
+  if (seconds < 5) return translate(lang, 'time.justNow');
+  if (seconds < 60) return translate(lang, 'time.secondsAgo', { n: seconds });
   const minutes = Math.floor(seconds / 60);
-  if (minutes < 60) return `${minutes}m ago`;
+  if (minutes < 60) return translate(lang, 'time.minutesAgo', { n: minutes });
   const hours = Math.floor(minutes / 60);
-  if (hours < 48) return `${hours}h ago`;
-  return `${Math.floor(hours / 24)}d ago`;
+  if (hours < 48) return translate(lang, 'time.hoursAgo', { n: hours });
+  return translate(lang, 'time.daysAgo', { n: Math.floor(hours / 24) });
 }
 
 export function formatUsd(value: number, compact = false): string {
@@ -66,8 +68,8 @@ export function formatUsd(value: number, compact = false): string {
   return value.toLocaleString('en-US', { style: 'currency', currency: 'USD', maximumFractionDigits: 0 });
 }
 
-export function israelTime(ts: number): string {
-  return new Intl.DateTimeFormat('en-GB', {
+export function israelTime(ts: number, lang: Lang = 'en'): string {
+  return new Intl.DateTimeFormat(lang === 'he' ? 'he-IL' : 'en-GB', {
     timeZone: 'Asia/Jerusalem',
     hour: '2-digit',
     minute: '2-digit',
