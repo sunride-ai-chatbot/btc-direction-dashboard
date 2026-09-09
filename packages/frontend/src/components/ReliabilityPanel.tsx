@@ -134,8 +134,10 @@ function HorizonCard({ r }: { r: HorizonReliability }) {
           <div className="pt-2 text-[10px] font-semibold uppercase tracking-widest text-slate-500">{t('rel.conformal')}</div>
           {r.conformal.available ? (
             <>
-              <div className="font-mono">{t('rel.coverage', { c: r.conformal.coverage80 === null ? '—' : (r.conformal.coverage80 * 100).toFixed(0), n: r.conformal.coverageN })}</div>
-              <div className="font-mono text-slate-500">{t('rel.halfWidth', { w: r.conformal.halfWidth80AtZero?.toFixed(2) ?? '—', b: r.conformal.baselineHalfWidth80?.toFixed(2) ?? '—' })}</div>
+              {/* No font-mono on the sentence itself (see SignalCard.tsx) — it would force LTR
+                  and scramble the Hebrew bidi order of the surrounding words. */}
+              <div>{t('rel.coverage', { c: r.conformal.coverage80 === null ? '—' : `‎${(r.conformal.coverage80 * 100).toFixed(0)}`, n: r.conformal.coverageN })}</div>
+              <div className="text-slate-500">{t('rel.halfWidth', { w: r.conformal.halfWidth80AtZero !== null ? `‎${r.conformal.halfWidth80AtZero.toFixed(2)}` : '—', b: r.conformal.baselineHalfWidth80 !== null ? `‎${r.conformal.baselineHalfWidth80.toFixed(2)}` : '—' })}</div>
             </>
           ) : (
             <div className="text-slate-500">{t('rel.conformalNa')}</div>

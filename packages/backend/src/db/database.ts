@@ -156,54 +156,61 @@ export class SignalDatabase {
     // v5 — evaluation provenance (band + regime) and self-collected 1-minute candles.
     // Existing rows are tagged 'fixed-v1' with the band that actually judged them,
     // and their regime is derived from the technical context stored at signal time.
+    // The whole step — DDL, backfill, and the version bump — is ONE transaction: if the
+    // process dies mid-migration (e.g. a Railway SIGTERM), the next boot retries cleanly
+    // instead of throwing "duplicate column name" against a half-applied schema.
     if (this.userVersion < 5) {
-      this.db.exec(`
-        ALTER TABLE evaluations ADD COLUMN band_pct REAL;
-        ALTER TABLE evaluations ADD COLUMN band_method TEXT;
-        ALTER TABLE evaluations ADD COLUMN regime TEXT;
-        UPDATE evaluations SET
-          band_method = 'fixed-v1',
-          band_pct = CASE horizon WHEN '1h' THEN 0.15 WHEN '4h' THEN 0.35 WHEN '24h' THEN 0.8 ELSE 1.5 END
-        WHERE band_method IS NULL;
-        CREATE TABLE btc_candles_1m (
-          ts INTEGER PRIMARY KEY,
-          open REAL NOT NULL,
-          high REAL NOT NULL,
-          low REAL NOT NULL,
-          close REAL NOT NULL,
-          volume REAL NOT NULL,
-          taker_buy_volume REAL NOT NULL
-        );
-      `);
-      this.backfillRegimes();
-      this.db.exec('PRAGMA user_version = 5');
+      this.db.exec('BEGIN');
+      try {
+        this.db.exec(`
+          ALTER TABLE evaluations ADD COLUMN band_pct REAL;
+          ALTER TABLE evaluations ADD COLUMN band_method TEXT;
+          ALTER TABLE evaluations ADD COLUMN regime TEXT;
+          UPDATE evaluations SET
+            band_method = 'fixed-v1',
+            band_pct = CASE horizon WHEN '1h' THEN 0.15 WHEN '4h' THEN 0.35 WHEN '24h' THEN 0.8 ELSE 1.5 END
+          WHERE band_method IS NULL;
+          CREATE TABLE IF NOT EXISTS btc_candles_1m (
+            ts INTEGER PRIMARY KEY,
+            open REAL NOT NULL,
+            high REAL NOT NULL,
+            low REAL NOT NULL,
+            close REAL NOT NULL,
+            volume REAL NOT NULL,
+            taker_buy_volume REAL NOT NULL
+          );
+        `);
+        this.backfillRegimes();
+        this.db.exec('PRAGMA user_version = 5');
+        this.db.exec('COMMIT');
+      } catch (err) {
+        this.db.exec('ROLLBACK');
+        throw err;
+      }
     }
   }
 
-  /** Derive regime for legacy evaluation rows from the signal's stored technical context. */
+  /**
+   * Derive regime for legacy evaluation rows from the signal's stored technical context.
+   * Runs inside the caller's transaction (v5 migration) — no BEGIN/COMMIT of its own,
+   * since SQLite does not support nested transactions.
+   */
   private backfillRegimes(): void {
     const rows = this.db
       .prepare('SELECT e.id AS id, s.context_json AS ctx FROM evaluations e JOIN signals s ON s.id = e.signal_id WHERE e.regime IS NULL')
       .all() as unknown as Array<{ id: number; ctx: string | null }>;
     const update = this.db.prepare('UPDATE evaluations SET regime = ? WHERE id = ?');
-    this.db.exec('BEGIN');
-    try {
-      for (const r of rows) {
-        let regime = 'unknown';
-        if (r.ctx) {
-          try {
-            const ctx = JSON.parse(r.ctx) as { technicalValues?: Record<string, unknown> };
-            regime = regimeFromTechnical(ctx.technicalValues);
-          } catch {
-            // unparseable legacy context — stays unknown
-          }
+    for (const r of rows) {
+      let regime = 'unknown';
+      if (r.ctx) {
+        try {
+          const ctx = JSON.parse(r.ctx) as { technicalValues?: Record<string, unknown> };
+          regime = regimeFromTechnical(ctx.technicalValues);
+        } catch {
+          // unparseable legacy context — stays unknown
         }
-        update.run(regime, r.id);
       }
-      this.db.exec('COMMIT');
-    } catch (err) {
-      this.db.exec('ROLLBACK');
-      throw err;
+      update.run(regime, r.id);
     }
   }
 

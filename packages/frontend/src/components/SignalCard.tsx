@@ -18,8 +18,11 @@ function fmtUsd(v: number): string {
   return v.toLocaleString('en-US', { style: 'currency', currency: 'USD', maximumFractionDigits: 0 });
 }
 
+// LRM (U+200E) keeps the signed number resolving left-to-right when embedded in an
+// RTL sentence — without it a leading '-' (or '≤') visually detaches from its digits
+// (see dynamicHe.ts, which uses the same prefix for the same reason).
 function pct(v: number): string {
-  return `${v > 0 ? '+' : ''}${v.toFixed(2)}`;
+  return `‎${v > 0 ? '+' : ''}${v.toFixed(2)}`;
 }
 
 export function SignalCard({ signal, live }: { signal: HorizonSignal; live?: LiveStreamState }) {
@@ -108,7 +111,7 @@ export function SignalCard({ signal, live }: { signal: HorizonSignal; live?: Liv
 
       <div
         className="mx-auto mt-2 max-w-md text-xs text-slate-500"
-        title={t('edge.explainer', { window: edge?.window ?? '7d', min: 55, minN: 100 })}
+        title={t('edge.explainer', { window: windowLabel(edge?.window ?? '7d'), min: 55, minN: 100 })}
       >
         <span className={edge?.status === 'proven' ? 'text-bull' : edge?.status === 'inverse' ? 'text-bear' : 'text-slate-400'}>
           {t(edgeStatusKey)}
@@ -166,8 +169,10 @@ export function SignalCard({ signal, live }: { signal: HorizonSignal; live?: Liv
         </div>
         {conf ? (
           <>
-            <div className="mt-1 font-mono">{t('conformal.line80', { lo: pct(conf.lo80), hi: pct(conf.hi80) })}</div>
-            <div className="font-mono text-slate-400">{t('conformal.line50', { lo: pct(conf.lo50), hi: pct(conf.hi50) })}</div>
+            {/* No font-mono here: it forces the whole element (and thus the sentence) LTR,
+                scrambling Hebrew bidi order — only the numeric substitutions are LTR-isolated (pct()). */}
+            <div className="mt-1">{t('conformal.line80', { lo: pct(conf.lo80), hi: pct(conf.hi80) })}</div>
+            <div className="text-slate-400">{t('conformal.line50', { lo: pct(conf.lo50), hi: pct(conf.hi50) })}</div>
           </>
         ) : (
           <div className="mt-1 text-slate-500">{t('conformal.na')}</div>
@@ -176,7 +181,9 @@ export function SignalCard({ signal, live }: { signal: HorizonSignal; live?: Liv
         {sim && sim.n > 0 && sim.upRate !== null ? (
           <div className="mt-1">
             {t('similar.line', {
-              bucket: sim.bucket,
+              // LRM-prefixed: bucket keys like "-25..-10" / "≤-25" have a leading sign that
+              // would otherwise render mirrored (e.g. "10-..25-") inside RTL text.
+              bucket: `‎${sim.bucket}`,
               rate: (sim.upRate * 100).toFixed(0),
               lo: ((sim.lowerBound ?? 0) * 100).toFixed(0),
               hi: ((sim.upperBound ?? 1) * 100).toFixed(0),

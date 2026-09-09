@@ -39,7 +39,9 @@ export function ComponentCard({ name, comp, weightPct, isEtf = false }: { name: 
 
   const etfDetails = comp.details as { netFlowToday?: number | null; rolling3Day?: number | null; rolling5Day?: number | null; dataDate?: string | null };
   const techDetails = comp.details as { cvd15m?: number | null; cvd1h?: number | null; cvd4h?: number | null };
-  const cvdFmt = (v: number | null | undefined): string => (typeof v === 'number' ? `${v > 0 ? '+' : ''}${(v * 100).toFixed(0)}%` : '—');
+  // LRM-prefixed (see SignalCard.tsx pct()) so the sign/percent stays LTR-isolated
+  // once this value is embedded in a non-font-mono Hebrew sentence below.
+  const cvdFmt = (v: number | null | undefined): string => (typeof v === 'number' ? `‎${v > 0 ? '+' : ''}${(v * 100).toFixed(0)}%` : '—');
   const hasCvd = typeof techDetails.cvd1h === 'number' || typeof techDetails.cvd4h === 'number';
 
   return (
@@ -79,7 +81,9 @@ export function ComponentCard({ name, comp, weightPct, isEtf = false }: { name: 
           {hasCvd && (
             <div className="mt-2 text-xs text-slate-400">
               {t('tech.orderFlow')}:{' '}
-              <span className="font-mono text-slate-300">
+              {/* No font-mono wrapper — the Hebrew sentence needs its natural RTL direction;
+                  cvdFmt() already LRM-isolates each numeric value. */}
+              <span className="text-slate-300">
                 {t('tech.cvdLine', { m15: cvdFmt(techDetails.cvd15m), h1: cvdFmt(techDetails.cvd1h), h4: cvdFmt(techDetails.cvd4h) })}
               </span>
             </div>

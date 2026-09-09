@@ -13,7 +13,32 @@ export interface EvalLike {
   correct: number;
 }
 
-const HORIZON_MINUTES: Record<Horizon, number> = { '1h': 60, '4h': 240, '24h': 1440, '72h': 4320 };
+export const HORIZON_MINUTES: Record<Horizon, number> = { '1h': 60, '4h': 240, '24h': 1440, '72h': 4320 };
+
+/**
+ * Signals persist every ~5 minutes, so consecutive evaluation rows for the same
+ * horizon share almost their entire outcome window (two adjacent 24h rows overlap
+ * by 23h55m — nearly the same realized move). Treating every row as an independent
+ * Bernoulli trial lets a single lucky/unlucky stretch masquerade as a large sample
+ * (100 correlated 24h rows can span just ~8 hours = one real outcome). This keeps
+ * only one row per non-overlapping horizon-length window, so every Wilson-interval
+ * statistic below is computed on genuinely independent outcomes. A direct
+ * consequence: 4h/24h/72h can rarely reach the configured minSamples inside a short
+ * window — that is the correct, honest answer, not a bug to route around.
+ */
+export function thinToNonOverlapping<T extends { signal_ts: number }>(rows: T[], horizonMinutes: number): T[] {
+  const horizonMs = horizonMinutes * 60_000;
+  const sorted = [...rows].sort((a, b) => a.signal_ts - b.signal_ts);
+  const out: T[] = [];
+  let cutoff = -Infinity;
+  for (const r of sorted) {
+    if (r.signal_ts >= cutoff) {
+      out.push(r);
+      cutoff = r.signal_ts + horizonMs;
+    }
+  }
+  return out;
+}
 
 // ---------------- volatility-adaptive neutral band ----------------
 
@@ -78,7 +103,8 @@ export function computeEdgeStats(rows: EvalLike[], horizon: Horizon, now: number
   const cfg = EDGE_GATE_CONFIG;
   const since = now - windowDays * 86_400_000;
   const inWindow = rows.filter((r) => r.horizon === horizon && r.signal_ts >= since);
-  const usable = inWindow.filter((r) => r.actual_direction !== 'flat' && Math.abs(r.final_score) >= cfg.minScore);
+  const nonFlat = inWindow.filter((r) => r.actual_direction !== 'flat' && Math.abs(r.final_score) >= cfg.minScore);
+  const usable = thinToNonOverlapping(nonFlat, HORIZON_MINUTES[horizon]);
   const agree = usable.filter((r) => Math.sign(r.final_score) === (r.actual_direction === 'up' ? 1 : -1)).length;
   const n = usable.length;
   if (n < cfg.minSamples) {
@@ -163,7 +189,8 @@ export function scoreBucket(score: number): string {
 export function similarStates(rows: EvalLike[], horizon: Horizon, score: number, now: number, windowDays = EDGE_GATE_CONFIG.windowDays): SimilarStates {
   const key = scoreBucket(score);
   const since = now - windowDays * 86_400_000;
-  const peers = rows.filter((r) => r.horizon === horizon && r.signal_ts >= since && r.actual_direction !== 'flat' && scoreBucket(r.final_score) === key);
+  const inBucket = rows.filter((r) => r.horizon === horizon && r.signal_ts >= since && r.actual_direction !== 'flat' && scoreBucket(r.final_score) === key);
+  const peers = thinToNonOverlapping(inBucket, HORIZON_MINUTES[horizon]);
   const ups = peers.filter((r) => r.actual_direction === 'up').length;
   if (peers.length === 0) return { bucket: key, n: 0, upRate: null, lowerBound: null, upperBound: null };
   const [lo, hi] = wilsonInterval(ups, peers.length);
@@ -184,9 +211,8 @@ export interface DriftReport {
 /** Daily score-sign agreement series + Bernoulli CUSUM against the 50% reference. */
 export function driftReport(rows: EvalLike[], horizon: Horizon): DriftReport {
   const cfg = DRIFT_CONFIG;
-  const usable = rows
-    .filter((r) => r.horizon === horizon && r.actual_direction !== 'flat' && Math.abs(r.final_score) >= EDGE_GATE_CONFIG.minScore)
-    .sort((a, b) => a.signal_ts - b.signal_ts);
+  const nonFlat = rows.filter((r) => r.horizon === horizon && r.actual_direction !== 'flat' && Math.abs(r.final_score) >= EDGE_GATE_CONFIG.minScore);
+  const usable = thinToNonOverlapping(nonFlat, HORIZON_MINUTES[horizon]);
   const hits = usable.map((r) => (Math.sign(r.final_score) === (r.actual_direction === 'up' ? 1 : -1) ? 1 : 0) as 0 | 1);
   const cus = usable.length >= cfg.minSamples ? bernoulliCusum(hits, 0.5, cfg.cusumK, cfg.cusumH) : { stat: 0, max: 0, alarm: false };
 

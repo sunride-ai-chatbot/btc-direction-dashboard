@@ -52,13 +52,22 @@ alertEngine.addSink(new DatabaseAlertSink(db));
 
 // ---------- live price stream (WebSocket in, SSE out) ----------
 
-const stream = new PriceStream((candle) => {
-  try {
-    db.upsertCandle(candle);
-  } catch (err) {
-    console.error('[stream] candle persist failed:', err instanceof Error ? err.message : err);
-  }
-});
+const stream = new PriceStream(
+  (candle) => {
+    try {
+      db.upsertCandle(candle);
+    } catch (err) {
+      console.error('[stream] candle persist failed:', err instanceof Error ? err.message : err);
+    }
+  },
+  600,
+  // A reconnect can leave a gap in the closed-candle series (the socket was down while
+  // minutes closed); re-running the REST backfill on reopen closes that gap. Only Binance
+  // supplies candles, so only its reopen needs this.
+  (ex) => {
+    if (ex === 'binance') void backfillCandles();
+  },
+);
 stream.seedCandles(db.getRecentCandles(600));
 
 async function backfillCandles(): Promise<void> {
@@ -286,13 +295,19 @@ app.get('/health', async (_req, reply) => {
 
 /** Server-Sent Events: consensus price ticks (throttled) + signal recomputes. */
 app.get('/api/stream', (req, reply) => {
-  const origin = (req.headers.origin as string | undefined) ?? '*';
+  // reply.hijack() bypasses @fastify/cors entirely (it never sees this response), so the
+  // allowlist has to be re-applied by hand here — echoing the request Origin unconditionally
+  // would let any third-party page open this feed even when CORS_ORIGIN is configured.
+  const origin = req.headers.origin as string | undefined;
+  const allowed = SERVER_CONFIG.corsOrigin ? SERVER_CONFIG.corsOrigin.split(',').map((s) => s.trim()) : null;
+  const acao = allowed ? (origin && allowed.includes(origin) ? origin : allowed[0]) : '*';
   reply.raw.writeHead(200, {
     'content-type': 'text/event-stream; charset=utf-8',
     'cache-control': 'no-cache, no-transform',
     connection: 'keep-alive',
     'x-accel-buffering': 'no',
-    'access-control-allow-origin': SERVER_CONFIG.corsOrigin ? origin : '*',
+    'access-control-allow-origin': acao,
+    vary: 'origin',
   });
   reply.hijack();
   reply.raw.write(`event: tick\ndata: ${JSON.stringify(streamPayload())}\n\n`);

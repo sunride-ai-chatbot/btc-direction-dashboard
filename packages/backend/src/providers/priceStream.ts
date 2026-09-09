@@ -42,11 +42,18 @@ export function computeConsensus(
   };
 }
 
-/** CVD ratios from closed 1-minute candles (newest last): (buy − sell) / (buy + sell). */
+/**
+ * CVD ratios from closed 1-minute candles (newest last): (buy − sell) / (buy + sell).
+ * The window is TIME-bounded (by candle timestamp), not count-bounded: a gap in the
+ * candle series (a WebSocket outage) shrinks the sample instead of silently
+ * stretching the window to cover a longer real period than its label says.
+ */
 export function computeCvd(candles: Candle1m[], windows = { m15: 15, h1: 60, h4: 240 }, minCandles = 15): CvdSnapshot {
+  const newest = candles.length > 0 ? candles[candles.length - 1].ts : null;
   const ratio = (n: number): number | null => {
-    if (candles.length < Math.min(n, minCandles) || candles.length < minCandles) return null;
-    const slice = candles.slice(-n);
+    if (newest === null) return null;
+    const slice = candles.filter((c) => c.ts > newest - n * 60_000);
+    if (slice.length < minCandles) return null;
     let buy = 0;
     let total = 0;
     for (const c of slice) {
@@ -111,6 +118,7 @@ export class PriceStream {
   private sockets: Partial<Record<ExchangeName, WebSocket>> = {};
   private connectedFlags: Record<ExchangeName, boolean> = { binance: false, coinbase: false, kraken: false };
   private attempts: Record<ExchangeName, number> = { binance: 0, coinbase: 0, kraken: 0 };
+  private everOpened: Record<ExchangeName, boolean> = { binance: false, coinbase: false, kraken: false };
   private reconnectTimers: Partial<Record<ExchangeName, NodeJS.Timeout>> = {};
   private candles: Candle1m[] = [];
   private liveCandle: Candle1m | null = null;
@@ -122,6 +130,10 @@ export class PriceStream {
   constructor(
     private onClosedCandle: (c: Candle1m) => void = () => {},
     private maxCandles = 600,
+    /** Fired when an exchange re-establishes a connection it had previously held (not the
+     *  first connect) — used to re-run the REST candle backfill and close any gap the
+     *  outage left in btc_candles_1m / the in-memory series. */
+    private onReopen?: (ex: ExchangeName) => void,
   ) {}
 
   /** Seed candle history (e.g. from REST backfill or the DB) before/after connecting. */
@@ -192,7 +204,11 @@ export class PriceStream {
 
     ws.onopen = () => {
       this.connectedFlags[ex] = true;
-      this.attempts[ex] = 0;
+      // Backoff resets on proof of a WORKING feed (see tick()), not merely a completed
+      // handshake — an exchange that accepts then immediately closes (maintenance,
+      // load-shedding) would otherwise be hammered every reconnectBaseMs forever.
+      if (this.everOpened[ex]) this.onReopen?.(ex);
+      this.everOpened[ex] = true;
       if (ex === 'coinbase') {
         ws.send(JSON.stringify({ type: 'subscribe', product_ids: ['BTC-USD'], channels: ['ticker'] }));
       } else if (ex === 'kraken') {
@@ -258,6 +274,9 @@ export class PriceStream {
   }
 
   private tick(ex: ExchangeName, price: number, now: number): void {
+    // A real message is proof the feed actually works — reset backoff here, not on
+    // handshake (onopen), so a connect-then-immediately-close loop still backs off.
+    this.attempts[ex] = 0;
     this.ticks[ex] = { price, ts: now };
     this.lastTickTs = now;
     if (this.listeners.size === 0) return;

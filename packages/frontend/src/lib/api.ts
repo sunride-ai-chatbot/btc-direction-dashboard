@@ -58,8 +58,13 @@ export interface LiveStreamState {
 
 /**
  * Server-Sent Events subscription to the backend's live consensus price.
- * EventSource reconnects on its own; `connected` flips false meanwhile so the
- * UI can fall back to the polled price and say so.
+ *
+ * EventSource only auto-reconnects after a network-level error or a clean stream
+ * end; a non-200 response (Railway serving 502/503 during a deploy or before the
+ * backend is up) or a wrong content-type FAILS the connection outright —
+ * readyState goes CLOSED and it never retries on its own. We detect that case
+ * and recreate the EventSource with a fixed backoff so the live price recovers
+ * without the user reloading the page.
  */
 export function useLiveStream(): LiveStreamState {
   const [state, setState] = useState<LiveStreamState>({ tick: null, connected: false, lastMove: null, signalVersion: 0 });
@@ -67,24 +72,41 @@ export function useLiveStream(): LiveStreamState {
 
   useEffect(() => {
     if (typeof EventSource === 'undefined') return;
-    const es = new EventSource(apiUrl('/api/stream'));
-    es.onopen = () => setState((s) => ({ ...s, connected: true }));
-    es.onerror = () => setState((s) => ({ ...s, connected: false }));
-    es.addEventListener('tick', (ev) => {
-      try {
-        const tick = JSON.parse((ev as MessageEvent).data) as StreamTick;
-        const prev = lastPriceRef.current;
-        const move = tick.price !== null && prev !== null && tick.price !== prev ? (tick.price > prev ? 'up' : 'down') : null;
-        if (tick.price !== null) lastPriceRef.current = tick.price;
-        setState((s) => ({ ...s, tick, connected: true, lastMove: move ?? s.lastMove }));
-      } catch {
-        // malformed frame — ignore
-      }
-    });
-    es.addEventListener('signal', () => {
-      setState((s) => ({ ...s, signalVersion: s.signalVersion + 1 }));
-    });
-    return () => es.close();
+    let es: EventSource | null = null;
+    let retryTimer: number | null = null;
+    let disposed = false;
+
+    const connect = () => {
+      es = new EventSource(apiUrl('/api/stream'));
+      es.onopen = () => setState((s) => ({ ...s, connected: true }));
+      es.onerror = () => {
+        setState((s) => ({ ...s, connected: false }));
+        if (!disposed && es?.readyState === EventSource.CLOSED) {
+          retryTimer = window.setTimeout(connect, 5_000);
+        }
+      };
+      es.addEventListener('tick', (ev) => {
+        try {
+          const tick = JSON.parse((ev as MessageEvent).data) as StreamTick;
+          const prev = lastPriceRef.current;
+          const move = tick.price !== null && prev !== null && tick.price !== prev ? (tick.price > prev ? 'up' : 'down') : null;
+          if (tick.price !== null) lastPriceRef.current = tick.price;
+          setState((s) => ({ ...s, tick, connected: true, lastMove: move ?? s.lastMove }));
+        } catch {
+          // malformed frame — ignore
+        }
+      });
+      es.addEventListener('signal', () => {
+        setState((s) => ({ ...s, signalVersion: s.signalVersion + 1 }));
+      });
+    };
+
+    connect();
+    return () => {
+      disposed = true;
+      if (retryTimer !== null) window.clearTimeout(retryTimer);
+      es?.close();
+    };
   }, []);
 
   return state;

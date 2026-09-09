@@ -1,9 +1,9 @@
 import { HORIZONS } from '../types.js';
 import type { EdgeStats, EvaluationBucket, Horizon } from '../types.js';
 import type { EvaluationRow, SignalDatabase } from '../db/database.js';
-import { computeEdgeStats, conformalCoverage, driftReport, fitConformal, type DriftReport, type EvalLike } from './edge.js';
+import { computeEdgeStats, conformalCoverage, driftReport, fitConformal, thinToNonOverlapping, HORIZON_MINUTES, type DriftReport, type EvalLike } from './edge.js';
 import { currentBands } from './evaluator.js';
-import { NEUTRAL_THRESHOLD_PCT } from '../config.js';
+import { NEUTRAL_THRESHOLD_PCT, CONFORMAL_CONFIG } from '../config.js';
 import { quantile, wilsonInterval } from '../utils/stats.js';
 
 /** Below this many evaluated signals per horizon, results are flagged unreliable. */
@@ -210,7 +210,8 @@ export function buildReliabilityReport(db: SignalDatabase, now = Date.now()): Re
 
   const horizons = HORIZONS.map((h): HorizonReliability => {
     const hz = rows.filter((r) => r.horizon === h);
-    const usable = hz.filter((r) => r.actual_direction !== 'flat' && Math.abs(r.final_score) >= 5);
+    // Wilson intervals need independent trials — see thinToNonOverlapping in edge.ts.
+    const usable = thinToNonOverlapping(hz.filter((r) => r.actual_direction !== 'flat' && Math.abs(r.final_score) >= 5), HORIZON_MINUTES[h]);
 
     const regimes = ['trend-up', 'trend-down', 'range', 'high-vol', 'unknown'].map((regime) => {
       const inR = usable.filter((r) => (r.regime ?? 'unknown') === regime);
@@ -224,9 +225,20 @@ export function buildReliabilityReport(db: SignalDatabase, now = Date.now()): Re
     const flat = hz.filter((r) => r.actual_direction === 'flat').length;
     const adaptiveRows = hz.filter((r) => r.band_method === 'vol-adaptive-v2').length;
 
+    // Full-data interval is what every live signal actually gets served.
     const interval = fitConformal(rows, h);
-    const coverage = interval ? conformalCoverage(rows, h, interval) : { n: 0, coverage80: null };
     const atZero = interval ? interval(0) : null;
+
+    // Coverage must be measured OUT of calibration, or the check is tautological
+    // (q80 is by construction the ~80th-percentile residual of whatever it's tested
+    // against). Fit a second interval that excludes the newest coverageCheckSamples
+    // rows, and score coverage only on those held-out rows.
+    const hzSorted = rows.filter((r) => r.horizon === h).sort((a, b) => a.signal_ts - b.signal_ts);
+    const k = CONFORMAL_CONFIG.coverageCheckSamples;
+    const heldOut = hzSorted.slice(-k);
+    const trainForCoverage = hzSorted.slice(0, -k);
+    const holdoutInterval = fitConformal(trainForCoverage, h);
+    const coverage = holdoutInterval ? conformalCoverage(heldOut, h, holdoutInterval, heldOut.length) : { n: 0, coverage80: null };
 
     return {
       horizon: h,

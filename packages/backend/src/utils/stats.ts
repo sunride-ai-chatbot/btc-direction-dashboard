@@ -65,19 +65,20 @@ export function linearFit(xs: number[], ys: number[]): { slope: number; intercep
 /**
  * Bernoulli CUSUM for detecting a drop in a hit-rate below a reference level.
  * S_t = max(0, S_{t-1} + (reference − k) − x_t) accumulates evidence that the
- * observed rate is BELOW reference; alarm when S exceeds h.
- * Returns the final statistic, its maximum, and whether the alarm fired.
+ * observed rate is BELOW reference. `alarm` reflects the CURRENT statistic
+ * (s >= h at the end of the series), not "did s ever cross h" — the floor at 0
+ * already lets a recovered hit-rate pull s back down, so alarm clears again once
+ * performance improves instead of staying stuck true forever after one bad stretch.
+ * `max` still reports the historical peak, for context.
  */
 export function bernoulliCusum(hits: Array<0 | 1>, reference: number, k: number, h: number): { stat: number; max: number; alarm: boolean } {
   let s = 0;
   let max = 0;
-  let alarm = false;
   for (const x of hits) {
     s = Math.max(0, s + (reference - k) - x);
     if (s > max) max = s;
-    if (s >= h) alarm = true;
   }
-  return { stat: s, max, alarm };
+  return { stat: s, max, alarm: s >= h };
 }
 
 /** Median of a numeric array (null for empty). */
