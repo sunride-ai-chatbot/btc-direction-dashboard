@@ -1,4 +1,5 @@
-import { lazy, Suspense, useState } from 'react';
+import { lazy, Suspense } from 'react';
+import { BrowserRouter, Routes, Route, NavLink, Navigate } from 'react-router-dom';
 import { Dashboard } from './pages/Dashboard';
 import { PolymarketPage } from './pages/PolymarketPage';
 import { HealthPage } from './pages/HealthPage';
@@ -20,15 +21,13 @@ function PageFallback() {
   );
 }
 
-type Page = 'dashboard' | 'news' | 'polymarket' | 'history' | 'evaluation' | 'health';
-
-const NAV: Array<{ id: Page; labelKey: TranslationKey }> = [
-  { id: 'dashboard', labelKey: 'nav.signal' },
-  { id: 'news', labelKey: 'nav.news' },
-  { id: 'polymarket', labelKey: 'nav.polymarket' },
-  { id: 'history', labelKey: 'nav.history' },
-  { id: 'evaluation', labelKey: 'nav.evaluation' },
-  { id: 'health', labelKey: 'nav.health' },
+const NAV: Array<{ path: string; labelKey: TranslationKey }> = [
+  { path: '/', labelKey: 'nav.signal' },
+  { path: '/news', labelKey: 'nav.news' },
+  { path: '/polymarket', labelKey: 'nav.polymarket' },
+  { path: '/history', labelKey: 'nav.history' },
+  { path: '/evaluation', labelKey: 'nav.evaluation' },
+  { path: '/health', labelKey: 'nav.health' },
 ];
 
 function LanguageToggle() {
@@ -38,7 +37,7 @@ function LanguageToggle() {
       <button
         onClick={() => setLang('he')}
         className={`cursor-pointer rounded-md px-2.5 py-1 text-xs font-semibold transition-colors duration-150 ${
-          lang === 'he' ? 'bg-accent text-white' : 'text-slate-400 hover:bg-card-hover hover:text-slate-200'
+          lang === 'he' ? 'bg-accent text-white shadow-glow-accent' : 'text-slate-400 hover:bg-card-hover hover:text-slate-200'
         }`}
         aria-pressed={lang === 'he'}
         lang="he"
@@ -48,7 +47,7 @@ function LanguageToggle() {
       <button
         onClick={() => setLang('en')}
         className={`cursor-pointer rounded-md px-2.5 py-1 text-xs font-semibold transition-colors duration-150 ${
-          lang === 'en' ? 'bg-accent text-white' : 'text-slate-400 hover:bg-card-hover hover:text-slate-200'
+          lang === 'en' ? 'bg-accent text-white shadow-glow-accent' : 'text-slate-400 hover:bg-card-hover hover:text-slate-200'
         }`}
         aria-pressed={lang === 'en'}
         lang="en"
@@ -60,11 +59,11 @@ function LanguageToggle() {
 }
 
 function AppShell() {
-  const [page, setPage] = useState<Page>('dashboard');
   const { t } = useI18n();
 
   return (
     <div className="min-h-screen pb-16">
+      <div className="hud-grid" aria-hidden="true" />
       <a
         href="#main"
         className="sr-only focus-visible:not-sr-only focus-visible:fixed focus-visible:start-3 focus-visible:top-3 focus-visible:z-50 focus-visible:rounded-lg focus-visible:bg-accent focus-visible:px-4 focus-visible:py-2 focus-visible:text-sm focus-visible:font-semibold focus-visible:text-white"
@@ -75,7 +74,10 @@ function AppShell() {
         <div className="mx-auto flex max-w-5xl flex-wrap items-center justify-between gap-3 px-4 py-3 sm:px-6">
           <div className="flex items-baseline gap-2">
             <span className="flex items-center gap-1.5 text-lg font-bold tracking-tight text-slate-50">
-              <span className="flex h-6 w-6 items-center justify-center rounded-md bg-accent/15 text-sm font-bold text-accent" aria-hidden="true">
+              <span
+                className="flex h-6 w-6 items-center justify-center rounded-md bg-accent/15 text-sm font-bold text-accent shadow-glow-accent"
+                aria-hidden="true"
+              >
                 ₿
               </span>
               Direction
@@ -85,35 +87,50 @@ function AppShell() {
           <div className="flex flex-wrap items-center justify-end gap-2 sm:gap-3">
             <nav className="flex flex-wrap gap-1" aria-label={t('app.primaryNav')}>
               {NAV.map((n) => (
-                <button
-                  key={n.id}
-                  onClick={() => setPage(n.id)}
-                  aria-current={page === n.id ? 'page' : undefined}
-                  className={`cursor-pointer rounded-lg border-b-2 px-3 py-1.5 text-sm font-medium transition-colors duration-150 ${
-                    page === n.id
-                      ? 'border-accent bg-card text-slate-100'
-                      : 'border-transparent text-slate-400 hover:bg-card/60 hover:text-slate-200'
-                  }`}
+                <NavLink
+                  key={n.path}
+                  to={n.path}
+                  end={n.path === '/'}
+                  className={({ isActive }) =>
+                    `cursor-pointer rounded-lg border-b-2 px-3 py-1.5 text-sm font-medium transition-colors duration-150 ${
+                      isActive
+                        ? 'border-accent bg-card text-slate-100 shadow-glow-accent-sm'
+                        : 'border-transparent text-slate-400 hover:bg-card/60 hover:text-slate-200'
+                    }`
+                  }
                 >
                   {t(n.labelKey)}
-                </button>
+                </NavLink>
               ))}
             </nav>
             <LanguageToggle />
           </div>
         </div>
       </header>
-      <main id="main" tabIndex={-1} className="px-4 pt-6 sm:px-6 focus:outline-none">
-        {page === 'dashboard' && <Dashboard />}
-        {page === 'news' && <NewsPage />}
-        {page === 'polymarket' && <PolymarketPage />}
-        {page === 'health' && <HealthPage />}
-        {(page === 'history' || page === 'evaluation') && (
-          <Suspense fallback={<PageFallback />}>
-            {page === 'history' && <HistoryPage />}
-            {page === 'evaluation' && <EvaluationPage />}
-          </Suspense>
-        )}
+      <main id="main" tabIndex={-1} className="relative px-4 pt-6 sm:px-6 focus:outline-none">
+        <Routes>
+          <Route path="/" element={<Dashboard />} />
+          <Route path="/news" element={<NewsPage />} />
+          <Route path="/polymarket" element={<PolymarketPage />} />
+          <Route path="/health" element={<HealthPage />} />
+          <Route
+            path="/history"
+            element={
+              <Suspense fallback={<PageFallback />}>
+                <HistoryPage />
+              </Suspense>
+            }
+          />
+          <Route
+            path="/evaluation"
+            element={
+              <Suspense fallback={<PageFallback />}>
+                <EvaluationPage />
+              </Suspense>
+            }
+          />
+          <Route path="*" element={<Navigate to="/" replace />} />
+        </Routes>
       </main>
     </div>
   );
@@ -122,7 +139,9 @@ function AppShell() {
 export default function App() {
   return (
     <I18nProvider>
-      <AppShell />
+      <BrowserRouter>
+        <AppShell />
+      </BrowserRouter>
     </I18nProvider>
   );
 }

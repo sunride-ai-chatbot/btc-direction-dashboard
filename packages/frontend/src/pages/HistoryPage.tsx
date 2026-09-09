@@ -35,8 +35,10 @@ export function HistoryPage() {
               key={h}
               aria-pressed={h === horizon}
               onClick={() => setHorizon(h)}
-              className={`cursor-pointer rounded px-3 py-1 font-mono text-xs font-semibold transition-colors duration-150 ${
-                h === horizon ? 'bg-accent text-white' : 'bg-card text-slate-400 ring-1 ring-border hover:bg-card-hover hover:text-slate-200'
+              className={`cursor-pointer rounded px-3 py-1 font-mono text-xs font-semibold transition-all duration-150 ${
+                h === horizon
+                  ? 'bg-accent text-white shadow-glow-accent-sm'
+                  : 'bg-card text-slate-400 ring-1 ring-border hover:bg-card-hover hover:text-slate-200'
               }`}
             >
               {t(`horizon.${h}`)}
@@ -59,7 +61,7 @@ export function HistoryPage() {
         <>
           <div className="mt-4 animate-fade-in-up rounded-xl border border-border bg-card p-4 shadow-card">
             <div className="text-xs uppercase tracking-widest text-slate-500">{t('hist.scoreChart')}</div>
-            <div className="chart-ltr">
+            <div className="chart-ltr chart-glow-info">
               <ResponsiveContainer width="100%" height={220}>
                 <ComposedChart data={chartData}>
                   <XAxis dataKey="time" tick={{ fontSize: 10, fill: '#64748b' }} minTickGap={60} />
@@ -77,7 +79,7 @@ export function HistoryPage() {
           <div className="mt-4 grid grid-cols-1 gap-4 md:grid-cols-2">
             <div className="animate-fade-in-up rounded-xl border border-border bg-card p-4 shadow-card">
               <div className="text-xs uppercase tracking-widest text-slate-500">{t('hist.priceChart')}</div>
-              <div className="chart-ltr">
+              <div className="chart-ltr chart-glow-flat">
                 <ResponsiveContainer width="100%" height={180}>
                   <ComposedChart data={chartData}>
                     <XAxis dataKey="time" tick={{ fontSize: 10, fill: '#64748b' }} minTickGap={60} />
@@ -90,7 +92,7 @@ export function HistoryPage() {
             </div>
             <div className="animate-fade-in-up rounded-xl border border-border bg-card p-4 shadow-card">
               <div className="text-xs uppercase tracking-widest text-slate-500">{t('hist.confChart')}</div>
-              <div className="chart-ltr">
+              <div className="chart-ltr chart-glow-accent">
                 <ResponsiveContainer width="100%" height={180}>
                   <ComposedChart data={chartData}>
                     <XAxis dataKey="time" tick={{ fontSize: 10, fill: '#64748b' }} minTickGap={60} />
@@ -123,6 +125,13 @@ export function HistoryPage() {
                       className={`px-3 py-2 text-left font-semibold ${
                         r.label === 'BULLISH' ? 'text-bull' : r.label === 'BEARISH' ? 'text-bear' : 'text-flat'
                       }`}
+                      style={
+                        r.label === 'BULLISH'
+                          ? { textShadow: '0 0 8px rgba(57,255,20,.35)' }
+                          : r.label === 'BEARISH'
+                            ? { textShadow: '0 0 8px rgba(255,23,68,.35)' }
+                            : undefined
+                      }
                     >
                       {t(`label.${r.label}`)}
                     </td>

@@ -17,6 +17,18 @@ function directionCls(score: number): string {
   return 'text-flat';
 }
 
+function scoreGlowCls(score: number): string {
+  if (score >= 10) return 'text-neon-bull text-glow-bull';
+  if (score <= -10) return 'text-neon-bear text-glow-bear';
+  return '';
+}
+
+function edgeGlowCls(score: number): string {
+  if (score >= 10) return 'hover:shadow-glow-bull hover:border-neon-bull/40';
+  if (score <= -10) return 'hover:shadow-glow-bear hover:border-neon-bear/40';
+  return '';
+}
+
 const FRESHNESS_TONE: Record<string, Tone> = {
   fresh: 'bull',
   daily: 'info',
@@ -47,7 +59,11 @@ export function ComponentCard({ name, comp, weightPct, isEtf = false }: { name: 
   const hasCvd = typeof techDetails.cvd1h === 'number' || typeof techDetails.cvd4h === 'number';
 
   return (
-    <div className="group rounded-xl border border-border bg-card p-4 shadow-card transition-colors duration-150 hover:border-border-strong hover:bg-card-hover">
+    <div
+      className={`group rounded-xl border border-border bg-card p-4 shadow-card transition-all duration-200 hover:border-border-strong hover:bg-card-hover ${
+        comp.available ? edgeGlowCls(comp.score) : ''
+      }`}
+    >
       <div className="flex items-center justify-between">
         <div className="text-sm font-semibold text-slate-200">{name}</div>
         <Badge tone={badgeTone}>{badgeLabel}</Badge>
@@ -55,7 +71,7 @@ export function ComponentCard({ name, comp, weightPct, isEtf = false }: { name: 
       {comp.available ? (
         <>
           <div className="mt-2 flex items-baseline gap-3">
-            <span className="font-mono text-2xl font-bold tabular-nums">
+            <span className={`font-mono text-2xl font-bold tabular-nums transition-colors duration-300 ${scoreGlowCls(comp.score)}`}>
               {comp.score > 0 ? '+' : ''}
               {comp.score.toFixed(0)}
             </span>

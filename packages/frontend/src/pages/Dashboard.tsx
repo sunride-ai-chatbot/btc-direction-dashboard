@@ -87,9 +87,9 @@ export function Dashboard() {
             key={h}
             aria-pressed={h === horizon}
             onClick={() => setHorizon(h)}
-            className={`cursor-pointer rounded-lg px-5 py-2 font-mono text-sm font-semibold tabular-nums transition-colors duration-150 ${
+            className={`cursor-pointer rounded-lg px-5 py-2 font-mono text-sm font-semibold tabular-nums transition-all duration-150 ${
               h === horizon
-                ? 'bg-accent text-white'
+                ? 'bg-accent text-white shadow-glow-accent'
                 : 'bg-card text-slate-400 ring-1 ring-border hover:bg-card-hover hover:text-slate-200'
             }`}
           >

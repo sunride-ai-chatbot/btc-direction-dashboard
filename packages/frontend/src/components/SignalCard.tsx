@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import type { HorizonSignal } from '../lib/types';
 import { timeAgo, type LiveStreamState } from '../lib/api';
 import { useI18n, type TranslationKey } from '../lib/i18n';
@@ -6,14 +6,15 @@ import { translateDynamic } from '../lib/dynamicHe';
 import { StatusDot, type Tone } from './ui';
 
 const LABEL_STYLE: Record<string, { tone: Tone; text: string; ring: string }> = {
-  BULLISH: { tone: 'bull', text: 'text-bull', ring: 'ring-bull/30' },
-  NEUTRAL: { tone: 'flat', text: 'text-flat', ring: 'ring-flat/30' },
-  BEARISH: { tone: 'bear', text: 'text-bear', ring: 'ring-bear/30' },
+  BULLISH: { tone: 'bull', text: 'text-bull text-glow-bull', ring: 'ring-bull/30 signal-ring-bull' },
+  NEUTRAL: { tone: 'flat', text: 'text-flat text-glow-flat', ring: 'ring-flat/30 signal-ring-flat' },
+  BEARISH: { tone: 'bear', text: 'text-bear text-glow-bear', ring: 'ring-bear/30 signal-ring-bear' },
 };
 
 const GATED_STYLE = { tone: 'neutral' as Tone, text: 'text-slate-300', ring: 'ring-slate-500/30' };
 
 const LIVE_FRESH_MS = 20_000;
+const SPARKLINE_POINTS = 36;
 
 function fmtUsd(v: number): string {
   return v.toLocaleString('en-US', { style: 'currency', currency: 'USD', maximumFractionDigits: 0 });
@@ -26,9 +27,56 @@ function pct(v: number): string {
   return `‎${v > 0 ? '+' : ''}${v.toFixed(2)}`;
 }
 
+/** Tiny live trend line of the last ~36 ticks — purely decorative reinforcement of the
+ * price already shown as text above it, so it's hidden from screen readers. */
+function LiveSparkline({ points, tone }: { points: number[]; tone: 'bull' | 'bear' }) {
+  if (points.length < 2) return null;
+  const w = 320;
+  const h = 56;
+  const min = Math.min(...points);
+  const max = Math.max(...points);
+  const span = max - min || 1;
+  const coords = points.map((v, i) => {
+    const x = (i / (points.length - 1)) * w;
+    const y = h - ((v - min) / span) * (h - 8) - 4;
+    return [x, y] as const;
+  });
+  const line = coords.map(([x, y]) => `${x.toFixed(1)},${y.toFixed(1)}`).join(' ');
+  const area = `0,${h} ${line} ${w},${h}`;
+  const [lastX, lastY] = coords[coords.length - 1];
+  const stroke = tone === 'bull' ? '#39ff14' : '#ff1744';
+  const gradId = `spark-fill-${tone}`;
+
+  return (
+    <div className="chart-ltr mx-auto mt-3 max-w-xs" aria-hidden="true">
+      <svg viewBox={`0 0 ${w} ${h}`} className="h-14 w-full overflow-visible" preserveAspectRatio="none">
+        <defs>
+          <linearGradient id={gradId} x1="0" y1="0" x2="0" y2="1">
+            <stop offset="0%" stopColor={stroke} stopOpacity="0.35" />
+            <stop offset="100%" stopColor={stroke} stopOpacity="0" />
+          </linearGradient>
+        </defs>
+        <polygon points={area} fill={`url(#${gradId})`} />
+        <polyline
+          points={line}
+          fill="none"
+          stroke={stroke}
+          strokeWidth="2"
+          strokeLinecap="round"
+          strokeLinejoin="round"
+          style={{ filter: `drop-shadow(0 0 4px ${stroke})` }}
+        />
+        <circle cx={lastX} cy={lastY} r="3" fill={stroke} style={{ filter: `drop-shadow(0 0 5px ${stroke})` }} />
+      </svg>
+    </div>
+  );
+}
+
 export function SignalCard({ signal, live }: { signal: HorizonSignal; live?: LiveStreamState }) {
   const { t, lang } = useI18n();
   const [flash, setFlash] = useState<'up' | 'down' | null>(null);
+  const [sparkline, setSparkline] = useState<number[]>([]);
+  const sparklineLastRef = useRef<number | null>(null);
 
   const tick = live?.tick ?? null;
   const streamFresh = !!live?.connected && tick !== null && tick.price !== null && Date.now() - tick.ts < LIVE_FRESH_MS;
@@ -37,9 +85,17 @@ export function SignalCard({ signal, live }: { signal: HorizonSignal; live?: Liv
   useEffect(() => {
     if (!live?.lastMove || !streamFresh) return;
     setFlash(live.lastMove);
-    const id = window.setTimeout(() => setFlash(null), 450);
+    const id = window.setTimeout(() => setFlash(null), 900);
     return () => window.clearTimeout(id);
   }, [tick?.price, live?.lastMove, streamFresh]);
+
+  // Rolling buffer of recent live ticks, purely client-side, to draw the sparkline —
+  // resets naturally if the live stream drops (sparkline just disappears until it refills).
+  useEffect(() => {
+    if (!streamFresh || tick?.price == null || tick.price === sparklineLastRef.current) return;
+    sparklineLastRef.current = tick.price;
+    setSparkline((prev) => [...prev, tick.price!].slice(-SPARKLINE_POINTS));
+  }, [tick?.price, streamFresh]);
 
   const style = signal.gated ? GATED_STYLE : LABEL_STYLE[signal.label];
   const edge = signal.edge;
@@ -76,7 +132,11 @@ export function SignalCard({ signal, live }: { signal: HorizonSignal; live?: Liv
       </div>
       <div
         className={`mt-1 font-mono text-4xl font-bold tabular-nums transition-colors duration-300 sm:text-5xl ${
-          flash === 'up' ? 'text-bull' : flash === 'down' ? 'text-bear' : 'text-slate-50'
+          flash === 'up'
+            ? 'price-flash-up text-neon-bull'
+            : flash === 'down'
+              ? 'price-flash-down text-neon-bear'
+              : 'text-slate-50'
         }`}
       >
         {price !== null ? fmtUsd(price) : '—'}
@@ -89,6 +149,9 @@ export function SignalCard({ signal, live }: { signal: HorizonSignal; live?: Liv
             k: tick.exchanges.kraken ? fmtUsd(tick.exchanges.kraken.price) : '—',
           })}
         </div>
+      )}
+      {sparkline.length >= 2 && (
+        <LiveSparkline points={sparkline} tone={sparkline[sparkline.length - 1] >= sparkline[0] ? 'bull' : 'bear'} />
       )}
 
       {signal.gated ? (

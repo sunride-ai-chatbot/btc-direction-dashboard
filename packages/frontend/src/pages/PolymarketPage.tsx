@@ -1,7 +1,8 @@
+import type { CSSProperties } from 'react';
 import { useApi, formatUsd, timeAgo, apiUrl } from '../lib/api';
 import type { PolymarketSnapshot } from '../lib/types';
 import { useI18n, type TranslationKey } from '../lib/i18n';
-import { EmptyState, Skeleton } from '../components/ui';
+import { EmptyState, Skeleton, StatusDot } from '../components/ui';
 import { IconInbox } from '../components/icons';
 
 function pp(change: number | null): string {
@@ -13,6 +14,15 @@ function pp(change: number | null): string {
 function changeCls(change: number | null, direction: 1 | -1): string {
   if (change === null || Math.abs(change) < 0.001) return 'text-slate-500';
   return change * direction > 0 ? 'text-bull' : 'text-bear';
+}
+
+// Reserve the neon glow for genuinely large moves (matches the "unusual" 24h threshold
+// elsewhere on this page) so it stays a meaningful signal, not noise on every tiny tick.
+function changeGlowStyle(change: number | null, direction: 1 | -1): CSSProperties | undefined {
+  if (change === null || Math.abs(change) < 0.03) return undefined;
+  return change * direction > 0
+    ? { textShadow: '0 0 8px rgba(57,255,20,.45)' }
+    : { textShadow: '0 0 8px rgba(255,23,68,.45)' };
 }
 
 export function PolymarketPage() {
@@ -91,9 +101,12 @@ export function PolymarketPage() {
                   <td className={`px-3 py-3 text-right font-mono tabular-nums ${changeCls(m.probChange1h, m.bullishDirection)}`}>
                     {pp(m.probChange1h)}
                   </td>
-                  <td className={`px-3 py-3 text-right font-mono tabular-nums ${changeCls(m.probChange24h, m.bullishDirection)}`}>
+                  <td
+                    className={`px-3 py-3 text-right font-mono tabular-nums ${changeCls(m.probChange24h, m.bullishDirection)}`}
+                    style={changeGlowStyle(m.probChange24h, m.bullishDirection)}
+                  >
                     {pp(m.probChange24h)}
-                    {unusual && <span className="mx-1 text-flat">●</span>}
+                    {unusual && <StatusDot tone={m.probChange24h! * m.bullishDirection > 0 ? 'bull' : 'bear'} pulse className="mx-1 inline-flex h-1.5 w-1.5 align-middle" />}
                   </td>
                   <td className="px-3 py-3 text-right font-mono tabular-nums text-slate-400">{formatUsd(m.volume, true)}</td>
                   <td className="px-3 py-3 text-right font-mono tabular-nums text-slate-400">{formatUsd(m.liquidity, true)}</td>

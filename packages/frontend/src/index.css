@@ -29,6 +29,58 @@ body {
   background-image: linear-gradient(90deg, theme('colors.card') 25%, theme('colors.card-hover') 50%, theme('colors.card') 75%);
 }
 
+/* Faint HUD grid + top spotlight behind the whole app — fixed, non-interactive, sits
+   under all content (z-0) so it never competes for attention or clicks. */
+.hud-grid {
+  position: fixed;
+  inset: 0;
+  z-index: 0;
+  pointer-events: none;
+  background-image:
+    radial-gradient(ellipse 60% 40% at 50% -5%, rgba(59, 130, 246, 0.16), transparent 65%),
+    linear-gradient(rgba(148, 163, 184, 0.05) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(148, 163, 184, 0.05) 1px, transparent 1px);
+  background-size:
+    100% 100%,
+    44px 44px,
+    44px 44px;
+  mask-image: radial-gradient(ellipse 85% 55% at 50% 0%, black 35%, transparent 85%);
+  -webkit-mask-image: radial-gradient(ellipse 85% 55% at 50% 0%, black 35%, transparent 85%);
+}
+
+/* Live price tick — a bright directional flash that decays into a soft ambient glow,
+   layered on top of whatever text color is already set (bull/bear/flat/plain). */
+.price-flash-up {
+  animation: price-pulse-bull 900ms ease-out;
+}
+.price-flash-down {
+  animation: price-pulse-bear 900ms ease-out;
+}
+
+/* Ambient "is this panel bullish/bearish/neutral right now" glow ring — a slow breathing
+   pulse so the hero card reads as alive even between price ticks. */
+.signal-ring-bull {
+  animation: pulse-glow-bull 2.6s ease-in-out infinite;
+}
+.signal-ring-bear {
+  animation: pulse-glow-bear 2.6s ease-in-out infinite;
+}
+.signal-ring-flat {
+  animation: pulse-glow-flat 2.6s ease-in-out infinite;
+}
+
+/* Soft neon trail on Recharts line/area strokes — applied to the SVG as a whole, so it
+   only visibly affects the colored line paths (axis text is too thin/faint to show it). */
+.chart-glow-info svg {
+  filter: drop-shadow(0 0 5px rgba(56, 189, 248, 0.5));
+}
+.chart-glow-flat svg {
+  filter: drop-shadow(0 0 5px rgba(245, 158, 11, 0.5));
+}
+.chart-glow-accent svg {
+  filter: drop-shadow(0 0 5px rgba(167, 139, 250, 0.5));
+}
+
 @media (prefers-reduced-motion: reduce) {
   *,
   *::before,

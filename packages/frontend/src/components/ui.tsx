@@ -7,24 +7,26 @@ import type { ReactNode } from 'react';
 export type Tone = 'bull' | 'bear' | 'flat' | 'info' | 'accent' | 'neutral';
 
 const TONE_DOT: Record<Tone, string> = {
-  bull: 'bg-bull',
-  bear: 'bg-bear',
-  flat: 'bg-flat',
+  bull: 'bg-neon-bull shadow-glow-bull',
+  bear: 'bg-neon-bear shadow-glow-bear',
+  flat: 'bg-flat shadow-glow-flat',
   info: 'bg-info',
-  accent: 'bg-accent',
+  accent: 'bg-accent shadow-glow-accent-sm',
   neutral: 'bg-slate-500',
 };
 
 const TONE_BADGE: Record<Tone, string> = {
-  bull: 'bg-bull/10 text-bull',
-  bear: 'bg-bear/10 text-bear',
-  flat: 'bg-flat/10 text-flat',
-  info: 'bg-info/10 text-info',
-  accent: 'bg-accent/10 text-accent',
-  neutral: 'bg-slate-500/10 text-slate-400',
+  bull: 'bg-bull/10 text-bull ring-1 ring-inset ring-bull/25',
+  bear: 'bg-bear/10 text-bear ring-1 ring-inset ring-bear/25',
+  flat: 'bg-flat/10 text-flat ring-1 ring-inset ring-flat/20',
+  info: 'bg-info/10 text-info ring-1 ring-inset ring-info/20',
+  accent: 'bg-accent/10 text-accent ring-1 ring-inset ring-accent/25',
+  neutral: 'bg-slate-500/10 text-slate-400 ring-1 ring-inset ring-slate-500/15',
 };
 
-/** Small colored status dot — replaces emoji (🟢🟡🔴⚪) as a semantic, themeable indicator. */
+/** Small colored status dot — replaces emoji (🟢🟡🔴⚪) as a semantic, themeable indicator.
+ * bull/bear glow with the "neon" variant since this is the one place a literal light
+ * (rather than body text) can carry full-voltage color without hurting contrast. */
 export function StatusDot({ tone, pulse = false, className = 'h-2 w-2' }: { tone: Tone; pulse?: boolean; className?: string }) {
   return (
     <span className={`relative inline-flex shrink-0 ${className}`}>
