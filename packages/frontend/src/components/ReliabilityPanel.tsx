@@ -2,12 +2,13 @@ import { ResponsiveContainer, ComposedChart, Line, XAxis, YAxis, Tooltip, Refere
 import { useApi } from '../lib/api';
 import type { EdgeStats, HorizonReliability, ReliabilityReport } from '../lib/types';
 import { useI18n, type TranslationKey } from '../lib/i18n';
+import { Badge, Skeleton, type Tone } from './ui';
 
-const STATUS_CLS: Record<string, string> = {
-  proven: 'bg-bull/10 text-bull',
-  unproven: 'bg-flat/10 text-flat',
-  inverse: 'bg-bear/10 text-bear',
-  insufficient: 'bg-slate-500/10 text-slate-400',
+const STATUS_TONE: Record<string, Tone> = {
+  proven: 'bull',
+  unproven: 'flat',
+  inverse: 'bear',
+  insufficient: 'neutral',
 };
 
 function p(v: number | null, digits = 0): string {
@@ -20,23 +21,21 @@ function EdgeBlock({ title, e }: { title: string; e: EdgeStats }) {
     <div className="rounded-lg border border-border bg-surface/60 p-3 text-xs">
       <div className="flex items-center justify-between">
         <span className="font-semibold text-slate-300">{title}</span>
-        <span className={`rounded-full px-2 py-0.5 text-[10px] font-bold uppercase ${STATUS_CLS[e.status]}`}>
-          {t(`edge.status.${e.status}` as TranslationKey)}
-        </span>
+        <Badge tone={STATUS_TONE[e.status]}>{t(`edge.status.${e.status}` as TranslationKey)}</Badge>
       </div>
       <div className="mt-1.5 flex justify-between text-slate-400">
         <span>{t('rel.signAgreement')}</span>
-        <span className="font-mono text-slate-200">{p(e.rate, 1)}</span>
+        <span className="font-mono tabular-nums text-slate-200">{p(e.rate, 1)}</span>
       </div>
       <div className="flex justify-between text-slate-400">
         <span>{t('rel.bounds')}</span>
-        <span className="font-mono">
+        <span className="font-mono tabular-nums">
           {p(e.lowerBound, 1)} – {p(e.upperBound, 1)}
         </span>
       </div>
       <div className="flex justify-between text-slate-400">
         <span>n</span>
-        <span className="font-mono">{e.n}</span>
+        <span className="font-mono tabular-nums">{e.n}</span>
       </div>
     </div>
   );
@@ -48,7 +47,7 @@ function HorizonCard({ r }: { r: HorizonReliability }) {
   const daily = r.drift.daily.map((d) => ({ day: d.day.slice(5), rate: d.rate === null ? null : +(d.rate * 100).toFixed(1), lower: d.lower === null ? null : +(d.lower * 100).toFixed(1), upper: d.upper === null ? null : +(d.upper * 100).toFixed(1), n: d.n }));
 
   return (
-    <div className="rounded-xl border border-border bg-card p-5">
+    <div className="rounded-xl border border-border bg-card p-5 shadow-card">
       <div className="flex items-baseline justify-between">
         <span className="font-mono text-lg font-bold">{t(`horizon.${r.horizon}` as TranslationKey)}</span>
         <span className={`text-xs font-semibold ${r.drift.alarm ? 'text-bear' : 'text-slate-500'}`}>
@@ -151,9 +150,22 @@ function HorizonCard({ r }: { r: HorizonReliability }) {
 export function ReliabilityPanel() {
   const { t } = useI18n();
   const { data } = useApi<ReliabilityReport>('/api/reliability', 120_000);
-  if (!data) return <div className="mt-8 text-center text-slate-500">{t('rel.loading')}</div>;
+  if (!data)
+    return (
+      <div className="mt-8">
+        <Skeleton className="h-6 w-56" />
+        <Skeleton className="mt-2 h-4 w-full max-w-xl" />
+        <div className="mt-3 grid grid-cols-1 gap-4 md:grid-cols-2">
+          <Skeleton className="h-64 w-full rounded-xl" />
+          <Skeleton className="h-64 w-full rounded-xl" />
+        </div>
+        <span className="sr-only" role="status">
+          {t('rel.loading')}
+        </span>
+      </div>
+    );
   return (
-    <div className="mt-8">
+    <div className="mt-8 animate-fade-in-up">
       <h3 className="text-lg font-bold">{t('rel.title')}</h3>
       <p className="mt-1 text-sm text-slate-400">{t('rel.explainer')}</p>
       <div className="mt-3 grid grid-cols-1 gap-4 md:grid-cols-2">

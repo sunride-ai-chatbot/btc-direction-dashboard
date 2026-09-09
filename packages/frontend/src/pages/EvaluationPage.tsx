@@ -3,6 +3,8 @@ import type { AttributionReport, DivergencePerformance, EvaluationReportPayload,
 import { useI18n, type TranslationKey } from '../lib/i18n';
 import { translateDynamic } from '../lib/dynamicHe';
 import { ReliabilityPanel } from '../components/ReliabilityPanel';
+import { EmptyState, Skeleton } from '../components/ui';
+import { IconInbox, IconWarning } from '../components/icons';
 
 function pct(v: number | null): string {
   return v === null ? '—' : `${v.toFixed(1)}%`;
@@ -27,30 +29,30 @@ const COMPONENT_KEY: Record<string, TranslationKey> = {
 function ReportCard({ r }: { r: HorizonEvaluationReport }) {
   const { t } = useI18n();
   return (
-    <div className="rounded-xl border border-border bg-card p-5">
+    <div className="rounded-xl border border-border bg-card p-5 shadow-card">
       <div className="flex items-baseline justify-between">
         <span className="font-mono text-lg font-bold">
           {r.horizon === 'overall' ? t('eval.overall') : t(`horizon.${r.horizon}` as TranslationKey)}
         </span>
-        <span className={`text-xs font-semibold ${r.reliable ? 'text-slate-500' : 'text-flat'}`}>
+        <span className={`text-xs font-semibold tabular-nums ${r.reliable ? 'text-slate-500' : 'text-flat'}`}>
           {t('eval.n', { n: r.totalEvaluated })} {!r.reliable && t('eval.unreliable')}
         </span>
       </div>
       <dl className="mt-3 grid grid-cols-2 gap-x-4 gap-y-1.5 text-sm">
         <dt className="text-slate-400">{t('eval.directionalAccuracy')}</dt>
-        <dd className="text-right font-mono font-semibold">{pct(r.directionalAccuracy)}</dd>
+        <dd className="text-right font-mono font-semibold tabular-nums">{pct(r.directionalAccuracy)}</dd>
         <dt className="pt-0.5 text-xs text-slate-500">{t('eval.rawAccuracy')}</dt>
-        <dd className="pt-0.5 text-right font-mono text-xs text-slate-500">{pct(r.rawDirectionalAccuracy)}</dd>
+        <dd className="pt-0.5 text-right font-mono text-xs tabular-nums text-slate-500">{pct(r.rawDirectionalAccuracy)}</dd>
         <dt className="text-slate-400">{t('eval.bullishAccuracy')}</dt>
-        <dd className="text-right font-mono text-bull">{pct(r.bullishAccuracy)}</dd>
+        <dd className="text-right font-mono tabular-nums text-bull">{pct(r.bullishAccuracy)}</dd>
         <dt className="text-slate-400">{t('eval.bearishAccuracy')}</dt>
-        <dd className="text-right font-mono text-bear">{pct(r.bearishAccuracy)}</dd>
+        <dd className="text-right font-mono tabular-nums text-bear">{pct(r.bearishAccuracy)}</dd>
         <dt className="text-slate-400">{t('eval.neutralAccuracy')}</dt>
-        <dd className="text-right font-mono text-flat">{pct(r.neutralAccuracy)}</dd>
+        <dd className="text-right font-mono tabular-nums text-flat">{pct(r.neutralAccuracy)}</dd>
         <dt className="text-slate-400">{t('eval.avgReturnBullish')}</dt>
-        <dd className="text-right font-mono">{ret(r.avgReturnAfterBullish)}</dd>
+        <dd className="text-right font-mono tabular-nums">{ret(r.avgReturnAfterBullish)}</dd>
         <dt className="text-slate-400">{t('eval.avgReturnBearish')}</dt>
-        <dd className="text-right font-mono">{ret(r.avgReturnAfterBearish)}</dd>
+        <dd className="text-right font-mono tabular-nums">{ret(r.avgReturnAfterBearish)}</dd>
       </dl>
 
       <div className="mt-4 text-xs font-semibold uppercase tracking-widest text-slate-500">{t('eval.winRate')}</div>
@@ -102,7 +104,7 @@ function AttributionTable({ title, rows }: { title: string; rows: AttributionRep
   const withData = rows.filter((r) => r.samples > 0);
   if (withData.length === 0) return null;
   return (
-    <div className="rounded-xl border border-border bg-card p-5">
+    <div className="rounded-xl border border-border bg-card p-5 shadow-card">
       <div className="text-sm font-semibold">{title}</div>
       <table className="mt-2 w-full text-xs">
         <thead className="text-slate-500">
@@ -140,32 +142,46 @@ export function EvaluationPage() {
   const { data: attribution } = useApi<AttributionReport>('/api/attribution', 120_000);
   const { data: divergences } = useApi<DivergencePerformance>('/api/divergences', 120_000);
 
-  if (!data) return <div className="mt-24 text-center text-slate-500">{t('eval.loading')}</div>;
+  if (!data)
+    return (
+      <div className="mx-auto max-w-5xl">
+        <Skeleton className="h-6 w-52" />
+        <Skeleton className="mt-3 h-16 w-full rounded-xl" />
+        <div className="mt-6 grid grid-cols-1 gap-4 md:grid-cols-2">
+          <Skeleton className="h-64 w-full rounded-xl" />
+          <Skeleton className="h-64 w-full rounded-xl" />
+        </div>
+        <span className="sr-only" role="status">
+          {t('eval.loading')}
+        </span>
+      </div>
+    );
 
   const hasData = data.overall.totalEvaluated > 0;
 
   return (
-    <div className="mx-auto max-w-5xl">
+    <div className="mx-auto max-w-5xl animate-fade-in-up">
       <div className="flex flex-wrap items-baseline justify-between gap-2">
         <h2 className="text-xl font-bold">{t('eval.title')}</h2>
         <div className="flex gap-3 text-xs">
-          <a className="text-slate-400 underline underline-offset-2 hover:text-slate-200" href={apiUrl('/api/export/evaluations.csv')}>
+          <a className="text-slate-400 underline decoration-slate-600 underline-offset-2 transition-colors duration-150 hover:text-slate-200" href={apiUrl('/api/export/evaluations.csv')}>
             evaluations.csv
           </a>
-          <a className="text-slate-400 underline underline-offset-2 hover:text-slate-200" href={apiUrl('/api/export/signals.csv')}>
+          <a className="text-slate-400 underline decoration-slate-600 underline-offset-2 transition-colors duration-150 hover:text-slate-200" href={apiUrl('/api/export/signals.csv')}>
             signals.csv
           </a>
         </div>
       </div>
 
-      <div className="mt-3 rounded-xl border border-flat/40 bg-flat/5 p-4 text-sm text-flat">
-        {t('eval.warning', { min: data.minReliableSamples, n: data.overall.totalEvaluated })}
+      <div className="mt-3 flex gap-3 rounded-xl border border-flat/40 bg-flat/5 p-4 text-sm text-flat">
+        <IconWarning className="mt-0.5 h-4 w-4 shrink-0" />
+        <span>{t('eval.warning', { min: data.minReliableSamples, n: data.overall.totalEvaluated })}</span>
       </div>
 
       {hasData && <ReliabilityPanel />}
 
       {!hasData ? (
-        <div className="mt-6 rounded-xl border border-border bg-card p-8 text-center text-slate-400">{t('eval.empty')}</div>
+        <EmptyState icon={<IconInbox />} title={t('eval.empty')} className="mt-6" />
       ) : (
         <>
           <div className="mt-6">
@@ -200,9 +216,9 @@ export function EvaluationPage() {
             {divergences.summary
               .filter((s) => s.total > 0)
               .map((s) => (
-                <div key={s.kind} className="rounded-xl border border-border bg-card p-4 text-sm">
+                <div key={s.kind} className="rounded-xl border border-border bg-card p-4 text-sm shadow-card">
                   <div className="font-semibold">{s.kind === 'bullish-divergence' ? t('eval.divBullish') : t('eval.divBearish')}</div>
-                  <div className="mt-1 text-slate-400">
+                  <div className="mt-1 tabular-nums text-slate-400">
                     {t('eval.divStats', { total: s.total, resolved: s.resolved, pct: pct(s.agreementPct) })}
                   </div>
                 </div>
@@ -210,9 +226,9 @@ export function EvaluationPage() {
           </div>
           <ul className="mt-3 space-y-1.5">
             {divergences.events.slice(0, 8).map((e) => (
-              <li key={e.id} className="rounded-lg border border-border bg-card px-3 py-2 text-xs text-slate-300">
+              <li key={e.id} className="rounded-lg border border-border bg-card px-3 py-2 text-xs text-slate-300 transition-colors duration-150 hover:bg-card-hover">
                 {translateDynamic(e.message, lang)}
-                <span className="mx-2 text-slate-500">
+                <span className="mx-2 tabular-nums text-slate-500">
                   → 4h: {ret(e.outcome4h)} · 24h: {ret(e.outcome24h)}
                 </span>
               </li>

@@ -6,6 +6,8 @@ export type Lang = 'en' | 'he';
 export const en = {
   // App shell
   'app.subtitle': 'market-signal dashboard',
+  'app.skipToContent': 'Skip to content',
+  'app.primaryNav': 'Primary navigation',
   'nav.signal': 'Signal',
   'nav.news': 'News',
   'nav.polymarket': 'Polymarket',
@@ -31,6 +33,7 @@ export const en = {
   'horizon.72h': '72H',
   'dash.divergenceTitle': 'Polymarket / price divergence detected',
   'dash.divergenceNote': 'Informational only — divergences are tracked for performance, they do not move the score yet.',
+  'dash.horizonPicker': 'Signal horizon',
   'dash.recentAlerts': 'Recent alerts',
   'dash.backendDown': 'Backend not reachable',
   'dash.backendDownHint': 'Start it with {cmd} — retrying automatically.',
@@ -100,7 +103,7 @@ export const en = {
 
   // Evaluation page
   'eval.title': 'Model evaluation',
-  'eval.warning': '⚠ Model performance is statistically unreliable until sufficient historical signals have been collected (≥{min} per horizon). Current sample: {n} evaluated signals. Confidence shown everywhere is model confidence, not the probability of BTC rising — this page exists to test whether higher confidence actually corresponds to higher accuracy before any calibration.',
+  'eval.warning': 'Model performance is statistically unreliable until sufficient historical signals have been collected (≥{min} per horizon). Current sample: {n} evaluated signals. Confidence shown everywhere is model confidence, not the probability of BTC rising — this page exists to test whether higher confidence actually corresponds to higher accuracy before any calibration.',
   'eval.empty': 'No signals are old enough to evaluate yet. The evaluator runs automatically every few minutes; 1h signals become evaluable an hour after they are stored (72h signals after three days).',
   'eval.loading': 'Loading evaluation…',
   'eval.overall': 'OVERALL',
@@ -268,6 +271,8 @@ export type TranslationKey = keyof typeof en;
 
 export const he: Record<TranslationKey, string> = {
   'app.subtitle': 'לוח איתותי שוק',
+  'app.skipToContent': 'דלג לתוכן',
+  'app.primaryNav': 'ניווט ראשי',
   'nav.signal': 'איתות',
   'nav.news': 'חדשות',
   'nav.polymarket': 'Polymarket',
@@ -292,6 +297,7 @@ export const he: Record<TranslationKey, string> = {
   'horizon.72h': '72 שע׳',
   'dash.divergenceTitle': 'זוהתה סטייה בין Polymarket למחיר',
   'dash.divergenceNote': 'לידיעה בלבד — סטיות נמדדות לביצועים היסטוריים ואינן משפיעות על הציון בשלב זה.',
+  'dash.horizonPicker': 'אופק האיתות',
   'dash.recentAlerts': 'התראות אחרונות',
   'dash.backendDown': 'אין חיבור לשרת',
   'dash.backendDownHint': 'הפעילו אותו עם {cmd} — ננסה שוב אוטומטית.',
@@ -357,7 +363,7 @@ export const he: Record<TranslationKey, string> = {
   'hist.empty': 'אין עדיין מספיק היסטוריה. איתותים נשמרים כל 5 דקות — השאירו את השרת פועל.',
 
   'eval.title': 'הערכת המודל',
-  'eval.warning': '⚠ ביצועי המודל אינם מהימנים סטטיסטית עד שנאספים מספיק איתותים היסטוריים (לפחות {min} לכל אופק). המדגם הנוכחי: {n} איתותים שהוערכו. הביטחון המוצג בכל מקום הוא ביטחון המודל, לא ההסתברות ש-BTC יעלה — הדף קיים כדי לבחון האם ביטחון גבוה אכן מתורגם לדיוק גבוה, לפני כל כיול.',
+  'eval.warning': 'ביצועי המודל אינם מהימנים סטטיסטית עד שנאספים מספיק איתותים היסטוריים (לפחות {min} לכל אופק). המדגם הנוכחי: {n} איתותים שהוערכו. הביטחון המוצג בכל מקום הוא ביטחון המודל, לא ההסתברות ש-BTC יעלה — הדף קיים כדי לבחון האם ביטחון גבוה אכן מתורגם לדיוק גבוה, לפני כל כיול.',
   'eval.empty': 'אין עדיין איתותים ותיקים מספיק להערכה. המעריך רץ אוטומטית כל כמה דקות; איתותי שעה ניתנים להערכה שעה אחרי שמירתם (איתותי 72 שע׳ — אחרי שלושה ימים).',
   'eval.loading': 'טוען הערכה…',
   'eval.overall': 'כולל',

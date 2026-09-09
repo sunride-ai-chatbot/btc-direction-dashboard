@@ -6,6 +6,8 @@ import { useApi, israelTime } from '../lib/api';
 import { HORIZONS, type Horizon, type HistoryRow } from '../lib/types';
 import { useI18n } from '../lib/i18n';
 import { translateDynamic } from '../lib/dynamicHe';
+import { EmptyState, Skeleton } from '../components/ui';
+import { IconInbox } from '../components/icons';
 
 export function HistoryPage() {
   const [horizon, setHorizon] = useState<Horizon>('24h');
@@ -25,15 +27,16 @@ export function HistoryPage() {
 
   return (
     <div className="mx-auto max-w-5xl">
-      <div className="flex items-center justify-between">
+      <div className="flex flex-wrap items-center justify-between gap-3">
         <h2 className="text-xl font-bold">{t('hist.title')}</h2>
-        <div className="flex gap-1.5">
+        <div className="flex gap-1.5" role="group" aria-label={t('dash.horizonPicker')}>
           {HORIZONS.map((h) => (
             <button
               key={h}
+              aria-pressed={h === horizon}
               onClick={() => setHorizon(h)}
-              className={`rounded px-3 py-1 font-mono text-xs font-semibold ${
-                h === horizon ? 'bg-slate-200 text-surface' : 'bg-card text-slate-400 ring-1 ring-border'
+              className={`cursor-pointer rounded px-3 py-1 font-mono text-xs font-semibold transition-colors duration-150 ${
+                h === horizon ? 'bg-accent text-white' : 'bg-card text-slate-400 ring-1 ring-border hover:bg-card-hover hover:text-slate-200'
               }`}
             >
               {t(`horizon.${h}`)}
@@ -42,11 +45,19 @@ export function HistoryPage() {
         </div>
       </div>
 
-      {chartData.length < 2 ? (
-        <div className="mt-6 rounded-xl border border-border bg-card p-8 text-center text-slate-400">{t('hist.empty')}</div>
+      {!data ? (
+        <div className="mt-4 space-y-4">
+          <Skeleton className="h-[220px] w-full rounded-xl" />
+          <div className="grid grid-cols-1 gap-4 md:grid-cols-2">
+            <Skeleton className="h-[180px] w-full rounded-xl" />
+            <Skeleton className="h-[180px] w-full rounded-xl" />
+          </div>
+        </div>
+      ) : chartData.length < 2 ? (
+        <EmptyState icon={<IconInbox />} title={t('hist.empty')} className="mt-6" />
       ) : (
         <>
-          <div className="mt-4 rounded-xl border border-border bg-card p-4">
+          <div className="mt-4 animate-fade-in-up rounded-xl border border-border bg-card p-4 shadow-card">
             <div className="text-xs uppercase tracking-widest text-slate-500">{t('hist.scoreChart')}</div>
             <div className="chart-ltr">
               <ResponsiveContainer width="100%" height={220}>
@@ -64,7 +75,7 @@ export function HistoryPage() {
           </div>
 
           <div className="mt-4 grid grid-cols-1 gap-4 md:grid-cols-2">
-            <div className="rounded-xl border border-border bg-card p-4">
+            <div className="animate-fade-in-up rounded-xl border border-border bg-card p-4 shadow-card">
               <div className="text-xs uppercase tracking-widest text-slate-500">{t('hist.priceChart')}</div>
               <div className="chart-ltr">
                 <ResponsiveContainer width="100%" height={180}>
@@ -77,7 +88,7 @@ export function HistoryPage() {
                 </ResponsiveContainer>
               </div>
             </div>
-            <div className="rounded-xl border border-border bg-card p-4">
+            <div className="animate-fade-in-up rounded-xl border border-border bg-card p-4 shadow-card">
               <div className="text-xs uppercase tracking-widest text-slate-500">{t('hist.confChart')}</div>
               <div className="chart-ltr">
                 <ResponsiveContainer width="100%" height={180}>
@@ -92,7 +103,7 @@ export function HistoryPage() {
             </div>
           </div>
 
-          <div className="mt-4 overflow-x-auto rounded-xl border border-border">
+          <div className="mt-4 animate-fade-in-up overflow-x-auto rounded-xl border border-border shadow-card">
             <table className="w-full min-w-[640px] text-sm">
               <thead className="bg-card text-xs uppercase tracking-wider text-slate-400">
                 <tr>
@@ -106,8 +117,8 @@ export function HistoryPage() {
               </thead>
               <tbody className="divide-y divide-border">
                 {[...rows].reverse().slice(0, 40).map((r) => (
-                  <tr key={r.id}>
-                    <td className="px-4 py-2 font-mono text-xs text-slate-400">{israelTime(r.ts, lang)}</td>
+                  <tr key={r.id} className="transition-colors duration-150 hover:bg-card-hover">
+                    <td className="px-4 py-2 font-mono text-xs tabular-nums text-slate-400">{israelTime(r.ts, lang)}</td>
                     <td
                       className={`px-3 py-2 text-left font-semibold ${
                         r.label === 'BULLISH' ? 'text-bull' : r.label === 'BEARISH' ? 'text-bear' : 'text-flat'
@@ -115,9 +126,9 @@ export function HistoryPage() {
                     >
                       {t(`label.${r.label}`)}
                     </td>
-                    <td className="px-3 py-2 text-right font-mono">{r.final_score.toFixed(0)}</td>
-                    <td className="px-3 py-2 text-right font-mono">{r.confidence}%</td>
-                    <td className="px-3 py-2 text-right font-mono text-slate-400">
+                    <td className="px-3 py-2 text-right font-mono tabular-nums">{r.final_score.toFixed(0)}</td>
+                    <td className="px-3 py-2 text-right font-mono tabular-nums">{r.confidence}%</td>
+                    <td className="px-3 py-2 text-right font-mono tabular-nums text-slate-400">
                       {r.btc_price ? `$${Math.round(r.btc_price).toLocaleString()}` : '—'}
                     </td>
                     <td className="max-w-sm truncate px-3 py-2 text-left text-xs text-slate-400">

@@ -1,11 +1,24 @@
-import { useState } from 'react';
+import { lazy, Suspense, useState } from 'react';
 import { Dashboard } from './pages/Dashboard';
 import { PolymarketPage } from './pages/PolymarketPage';
-import { HistoryPage } from './pages/HistoryPage';
-import { EvaluationPage } from './pages/EvaluationPage';
 import { HealthPage } from './pages/HealthPage';
 import { NewsPage } from './pages/NewsPage';
 import { I18nProvider, useI18n, type TranslationKey } from './lib/i18n';
+import { Skeleton } from './components/ui';
+
+// Recharts (~150kB gzipped) is only needed on these two pages — code-split them so the
+// Signal/News/Polymarket/Health tabs stay light on first load.
+const HistoryPage = lazy(() => import('./pages/HistoryPage').then((m) => ({ default: m.HistoryPage })));
+const EvaluationPage = lazy(() => import('./pages/EvaluationPage').then((m) => ({ default: m.EvaluationPage })));
+
+function PageFallback() {
+  return (
+    <div className="mx-auto max-w-5xl">
+      <Skeleton className="h-6 w-48" />
+      <Skeleton className="mt-4 h-64 w-full rounded-xl" />
+    </div>
+  );
+}
 
 type Page = 'dashboard' | 'news' | 'polymarket' | 'history' | 'evaluation' | 'health';
 
@@ -21,21 +34,23 @@ const NAV: Array<{ id: Page; labelKey: TranslationKey }> = [
 function LanguageToggle() {
   const { lang, setLang } = useI18n();
   return (
-    <div className="flex items-center gap-1 rounded-lg bg-card px-1 py-0.5 ring-1 ring-border" role="group" aria-label="Language">
+    <div className="flex items-center gap-0.5 rounded-lg bg-card p-0.5 ring-1 ring-border" role="group" aria-label="Language">
       <button
         onClick={() => setLang('he')}
-        className={`rounded px-2 py-1 text-xs font-semibold transition ${
-          lang === 'he' ? 'bg-slate-200 text-surface' : 'text-slate-400 hover:text-slate-200'
+        className={`cursor-pointer rounded-md px-2.5 py-1 text-xs font-semibold transition-colors duration-150 ${
+          lang === 'he' ? 'bg-accent text-white' : 'text-slate-400 hover:bg-card-hover hover:text-slate-200'
         }`}
+        aria-pressed={lang === 'he'}
         lang="he"
       >
         עברית
       </button>
       <button
         onClick={() => setLang('en')}
-        className={`rounded px-2 py-1 text-xs font-semibold transition ${
-          lang === 'en' ? 'bg-slate-200 text-surface' : 'text-slate-400 hover:text-slate-200'
+        className={`cursor-pointer rounded-md px-2.5 py-1 text-xs font-semibold transition-colors duration-150 ${
+          lang === 'en' ? 'bg-accent text-white' : 'text-slate-400 hover:bg-card-hover hover:text-slate-200'
         }`}
+        aria-pressed={lang === 'en'}
         lang="en"
       >
         EN
@@ -49,36 +64,56 @@ function AppShell() {
   const { t } = useI18n();
 
   return (
-    <div className="min-h-screen px-4 pb-16 pt-6 sm:px-6">
-      <header className="mx-auto mb-8 flex max-w-5xl flex-wrap items-center justify-between gap-3">
-        <div className="flex items-baseline gap-2">
-          <span className="text-lg font-extrabold tracking-tight">₿ Direction</span>
-          <span className="text-xs text-slate-500">{t('app.subtitle')}</span>
-        </div>
-        <div className="flex flex-wrap items-center justify-end gap-3">
-          <nav className="flex flex-wrap gap-1">
-            {NAV.map((n) => (
-              <button
-                key={n.id}
-                onClick={() => setPage(n.id)}
-                className={`rounded-lg px-3 py-1.5 text-sm font-medium transition ${
-                  page === n.id ? 'bg-card text-slate-100 ring-1 ring-border' : 'text-slate-400 hover:text-slate-200'
-                }`}
-              >
-                {t(n.labelKey)}
-              </button>
-            ))}
-          </nav>
-          <LanguageToggle />
+    <div className="min-h-screen pb-16">
+      <a
+        href="#main"
+        className="sr-only focus-visible:not-sr-only focus-visible:fixed focus-visible:start-3 focus-visible:top-3 focus-visible:z-50 focus-visible:rounded-lg focus-visible:bg-accent focus-visible:px-4 focus-visible:py-2 focus-visible:text-sm focus-visible:font-semibold focus-visible:text-white"
+      >
+        {t('app.skipToContent')}
+      </a>
+      <header className="sticky top-0 z-40 border-b border-border/80 bg-surface/85 backdrop-blur-md">
+        <div className="mx-auto flex max-w-5xl flex-wrap items-center justify-between gap-3 px-4 py-3 sm:px-6">
+          <div className="flex items-baseline gap-2">
+            <span className="flex items-center gap-1.5 text-lg font-bold tracking-tight text-slate-50">
+              <span className="flex h-6 w-6 items-center justify-center rounded-md bg-accent/15 text-sm font-bold text-accent" aria-hidden="true">
+                ₿
+              </span>
+              Direction
+            </span>
+            <span className="hidden text-xs text-slate-500 sm:inline">{t('app.subtitle')}</span>
+          </div>
+          <div className="flex flex-wrap items-center justify-end gap-2 sm:gap-3">
+            <nav className="flex flex-wrap gap-1" aria-label={t('app.primaryNav')}>
+              {NAV.map((n) => (
+                <button
+                  key={n.id}
+                  onClick={() => setPage(n.id)}
+                  aria-current={page === n.id ? 'page' : undefined}
+                  className={`cursor-pointer rounded-lg border-b-2 px-3 py-1.5 text-sm font-medium transition-colors duration-150 ${
+                    page === n.id
+                      ? 'border-accent bg-card text-slate-100'
+                      : 'border-transparent text-slate-400 hover:bg-card/60 hover:text-slate-200'
+                  }`}
+                >
+                  {t(n.labelKey)}
+                </button>
+              ))}
+            </nav>
+            <LanguageToggle />
+          </div>
         </div>
       </header>
-      <main>
+      <main id="main" tabIndex={-1} className="px-4 pt-6 sm:px-6 focus:outline-none">
         {page === 'dashboard' && <Dashboard />}
         {page === 'news' && <NewsPage />}
         {page === 'polymarket' && <PolymarketPage />}
-        {page === 'history' && <HistoryPage />}
-        {page === 'evaluation' && <EvaluationPage />}
         {page === 'health' && <HealthPage />}
+        {(page === 'history' || page === 'evaluation') && (
+          <Suspense fallback={<PageFallback />}>
+            {page === 'history' && <HistoryPage />}
+            {page === 'evaluation' && <EvaluationPage />}
+          </Suspense>
+        )}
       </main>
     </div>
   );

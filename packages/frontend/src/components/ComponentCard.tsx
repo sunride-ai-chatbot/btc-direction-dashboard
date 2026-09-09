@@ -2,6 +2,8 @@ import { useState } from 'react';
 import type { ComponentScore } from '../lib/types';
 import { useI18n, type TranslationKey } from '../lib/i18n';
 import { translateDynamic } from '../lib/dynamicHe';
+import { Badge, type Tone } from './ui';
+import { IconChevronDown } from './icons';
 
 function directionKey(score: number): TranslationKey {
   if (score >= 10) return 'dir.bullish';
@@ -15,11 +17,11 @@ function directionCls(score: number): string {
   return 'text-flat';
 }
 
-const FRESHNESS_CLS: Record<string, string> = {
-  fresh: 'bg-bull/10 text-bull',
-  daily: 'bg-sky-400/10 text-sky-400',
-  stale: 'bg-flat/10 text-flat',
-  unavailable: 'bg-bear/10 text-bear',
+const FRESHNESS_TONE: Record<string, Tone> = {
+  fresh: 'bull',
+  daily: 'info',
+  stale: 'flat',
+  unavailable: 'bear',
 };
 
 function fmtM(v: unknown): string {
@@ -34,7 +36,7 @@ export function ComponentCard({ name, comp, weightPct, isEtf = false }: { name: 
 
   // Daily-cadence data (ETF) must not present itself as live-fresh.
   const badgeKind = !comp.available ? 'unavailable' : isEtf && comp.freshness === 'fresh' ? 'daily' : comp.freshness;
-  const badgeCls = FRESHNESS_CLS[badgeKind];
+  const badgeTone = FRESHNESS_TONE[badgeKind];
   const badgeLabel = t(`fresh.${badgeKind}` as TranslationKey);
 
   const etfDetails = comp.details as { netFlowToday?: number | null; rolling3Day?: number | null; rolling5Day?: number | null; dataDate?: string | null };
@@ -45,15 +47,15 @@ export function ComponentCard({ name, comp, weightPct, isEtf = false }: { name: 
   const hasCvd = typeof techDetails.cvd1h === 'number' || typeof techDetails.cvd4h === 'number';
 
   return (
-    <div className="rounded-xl border border-border bg-card p-4">
+    <div className="group rounded-xl border border-border bg-card p-4 shadow-card transition-colors duration-150 hover:border-border-strong hover:bg-card-hover">
       <div className="flex items-center justify-between">
         <div className="text-sm font-semibold text-slate-200">{name}</div>
-        <span className={`rounded-full px-2 py-0.5 text-[10px] font-medium uppercase ${badgeCls}`}>{badgeLabel}</span>
+        <Badge tone={badgeTone}>{badgeLabel}</Badge>
       </div>
       {comp.available ? (
         <>
           <div className="mt-2 flex items-baseline gap-3">
-            <span className="font-mono text-2xl font-bold">
+            <span className="font-mono text-2xl font-bold tabular-nums">
               {comp.score > 0 ? '+' : ''}
               {comp.score.toFixed(0)}
             </span>
@@ -96,12 +98,14 @@ export function ComponentCard({ name, comp, weightPct, isEtf = false }: { name: 
       )}
       <button
         onClick={() => setExpanded(!expanded)}
-        className="mt-3 text-xs text-slate-500 underline-offset-2 hover:text-slate-300 hover:underline"
+        aria-expanded={expanded}
+        className="mt-3 inline-flex cursor-pointer items-center gap-1 text-xs text-slate-500 transition-colors duration-150 hover:text-slate-300"
       >
         {expanded ? t('comp.hideRawData') : t('comp.rawData')}
+        <IconChevronDown className={`h-3 w-3 transition-transform duration-200 ${expanded ? 'rotate-180' : ''}`} />
       </button>
       {expanded && (
-        <pre className="chart-ltr mt-2 max-h-48 overflow-auto rounded bg-surface p-2 text-start text-[10px] leading-relaxed text-slate-400">
+        <pre className="chart-ltr animate-fade-in-up mt-2 max-h-48 overflow-auto rounded-lg border border-border bg-surface p-2 text-start text-[10px] leading-relaxed text-slate-400">
           {JSON.stringify(comp.details, null, 2)}
         </pre>
       )}

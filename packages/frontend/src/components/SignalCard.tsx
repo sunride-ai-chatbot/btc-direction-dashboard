@@ -3,14 +3,15 @@ import type { HorizonSignal } from '../lib/types';
 import { timeAgo, type LiveStreamState } from '../lib/api';
 import { useI18n, type TranslationKey } from '../lib/i18n';
 import { translateDynamic } from '../lib/dynamicHe';
+import { StatusDot, type Tone } from './ui';
 
-const LABEL_STYLE: Record<string, { emoji: string; text: string; ring: string }> = {
-  BULLISH: { emoji: '🟢', text: 'text-bull', ring: 'ring-bull/30' },
-  NEUTRAL: { emoji: '🟡', text: 'text-flat', ring: 'ring-flat/30' },
-  BEARISH: { emoji: '🔴', text: 'text-bear', ring: 'ring-bear/30' },
+const LABEL_STYLE: Record<string, { tone: Tone; text: string; ring: string }> = {
+  BULLISH: { tone: 'bull', text: 'text-bull', ring: 'ring-bull/30' },
+  NEUTRAL: { tone: 'flat', text: 'text-flat', ring: 'ring-flat/30' },
+  BEARISH: { tone: 'bear', text: 'text-bear', ring: 'ring-bear/30' },
 };
 
-const GATED_STYLE = { emoji: '⚪', text: 'text-slate-300', ring: 'ring-slate-500/30' };
+const GATED_STYLE = { tone: 'neutral' as Tone, text: 'text-slate-300', ring: 'ring-slate-500/30' };
 
 const LIVE_FRESH_MS = 20_000;
 
@@ -49,12 +50,12 @@ export function SignalCard({ signal, live }: { signal: HorizonSignal; live?: Liv
   const sim = signal.similarStates;
 
   return (
-    <div className={`rounded-2xl bg-card ring-1 ${style.ring} p-8 text-center shadow-xl`}>
+    <div className={`rounded-2xl bg-card ring-1 ${style.ring} animate-fade-in-up p-6 text-center shadow-elevated sm:p-8`}>
       <div className="flex items-center justify-center gap-2 text-sm uppercase tracking-widest text-slate-400">
         <span>BTC</span>
         {live && (
           <span
-            className={`inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-[10px] font-bold ${
+            className={`inline-flex items-center gap-1.5 rounded-full px-2 py-0.5 text-[10px] font-bold ${
               streamFresh ? 'bg-bull/10 text-bull' : 'bg-slate-500/10 text-slate-500'
             }`}
             title={
@@ -63,7 +64,7 @@ export function SignalCard({ signal, live }: { signal: HorizonSignal; live?: Liv
                 : undefined
             }
           >
-            <span className={`h-1.5 w-1.5 rounded-full ${streamFresh ? 'animate-pulse bg-bull' : 'bg-slate-500'}`} />
+            <StatusDot tone={streamFresh ? 'bull' : 'neutral'} pulse={streamFresh} className="h-1.5 w-1.5" />
             {streamFresh ? t('live.live') : t('live.polling')}
           </span>
         )}
@@ -74,14 +75,14 @@ export function SignalCard({ signal, live }: { signal: HorizonSignal; live?: Liv
         )}
       </div>
       <div
-        className={`mt-1 font-mono text-4xl font-bold transition-colors duration-300 sm:text-5xl ${
-          flash === 'up' ? 'text-bull' : flash === 'down' ? 'text-bear' : ''
+        className={`mt-1 font-mono text-4xl font-bold tabular-nums transition-colors duration-300 sm:text-5xl ${
+          flash === 'up' ? 'text-bull' : flash === 'down' ? 'text-bear' : 'text-slate-50'
         }`}
       >
         {price !== null ? fmtUsd(price) : '—'}
       </div>
       {streamFresh && tick && (
-        <div className="mt-1 font-mono text-[11px] text-slate-500">
+        <div className="mt-1 font-mono text-[11px] tabular-nums text-slate-500">
           {t('live.exchanges', {
             b: tick.exchanges.binance ? fmtUsd(tick.exchanges.binance.price) : '—',
             c: tick.exchanges.coinbase ? fmtUsd(tick.exchanges.coinbase.price) : '—',
@@ -92,20 +93,22 @@ export function SignalCard({ signal, live }: { signal: HorizonSignal; live?: Liv
 
       {signal.gated ? (
         <>
-          <div className={`mt-4 text-3xl font-extrabold tracking-wide sm:text-4xl ${style.text}`}>
-            {style.emoji} {t('edge.noProvenEdge')}
+          <div className={`mt-4 flex items-center justify-center gap-2.5 text-2xl font-extrabold tracking-wide sm:text-4xl ${style.text}`}>
+            <StatusDot tone={style.tone} className="h-3 w-3 sm:h-3.5 sm:w-3.5" />
+            {t('edge.noProvenEdge')}
           </div>
           <div className="mt-2 text-sm text-slate-400">
             {t('edge.modelLean', { label: t(`label.${signal.label}`) })}{' '}
-            <span className="font-mono">
+            <span className="font-mono tabular-nums">
               ({signal.finalScore > 0 ? '+' : ''}
               {signal.finalScore})
             </span>
           </div>
         </>
       ) : (
-        <div className={`mt-4 text-4xl font-extrabold tracking-wide sm:text-5xl ${style.text}`}>
-          {style.emoji} {t(`label.${signal.label}`)}
+        <div className={`mt-4 flex items-center justify-center gap-2.5 text-3xl font-extrabold tracking-wide sm:text-5xl ${style.text}`}>
+          <StatusDot tone={style.tone} className="h-3 w-3 sm:h-3.5 sm:w-3.5" />
+          {t(`label.${signal.label}`)}
         </div>
       )}
 
@@ -136,7 +139,7 @@ export function SignalCard({ signal, live }: { signal: HorizonSignal; live?: Liv
 
       <div className="mt-3 text-lg text-slate-300">
         <span className="text-sm uppercase tracking-wide text-slate-500">{t('signal.modelConfidence')}</span>{' '}
-        <span className="font-mono font-semibold">{signal.confidence}%</span>
+        <span className="font-mono font-semibold tabular-nums">{signal.confidence}%</span>
       </div>
       <div className="mt-1 text-sm uppercase tracking-widest text-slate-500">
         {t('signal.horizonSignal', {

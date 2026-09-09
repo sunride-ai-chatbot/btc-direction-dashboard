@@ -2,8 +2,42 @@
 @tailwind components;
 @tailwind utilities;
 
+html {
+  color-scheme: dark;
+}
+
 body {
-  @apply bg-surface text-slate-200 antialiased;
+  @apply bg-surface font-sans text-slate-200 antialiased;
+}
+
+/* Visible, on-brand focus ring for every interactive element (keyboard nav). Using
+   :focus-visible (not :focus) keeps mouse clicks from showing a ring. */
+:focus-visible {
+  outline: 2px solid theme('colors.accent');
+  outline-offset: 2px;
+  border-radius: 2px;
+}
+
+::selection {
+  background: theme('colors.accent');
+  color: white;
+}
+
+/* Skeleton loading placeholder: a soft sweep, disabled under reduced motion below. */
+.skeleton {
+  @apply animate-shimmer rounded bg-[length:200%_100%];
+  background-image: linear-gradient(90deg, theme('colors.card') 25%, theme('colors.card-hover') 50%, theme('colors.card') 75%);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.001ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.001ms !important;
+    scroll-behavior: auto !important;
+  }
 }
 
 /* RTL (Hebrew): mirror physical text-alignment utilities so tables read naturally. */
