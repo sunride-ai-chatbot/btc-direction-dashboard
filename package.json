@@ -15,7 +15,8 @@
     "packages/*"
   ],
   "devDependencies": {
-    "concurrently": "^8.2.2"
+    "concurrently": "^8.2.2",
+    "railway": "^3.11.0"
   },
   "allowScripts": {
     "esbuild@0.28.2": true,
