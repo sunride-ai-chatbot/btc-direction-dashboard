@@ -2,27 +2,28 @@ import { fetchJson } from '../utils/fetchJson.js';
 import { ema, rsi, macd, volatility, pctChange } from '../utils/indicators.js';
 import { FRESHNESS_LIMITS_MS } from '../config.js';
 import type { BitcoinTechnicals } from '../types.js';
+import { fetchCandles, type JsonFetcher } from './candles.js';
 
 export interface BitcoinPriceProvider {
   fetchTechnicals(): Promise<BitcoinTechnicals>;
 }
 
-type BinanceKline = [number, string, string, string, string, string, ...unknown[]];
-
-export class BinanceBitcoinProvider implements BitcoinPriceProvider {
+/**
+ * Hourly BTC technicals from whichever spot venue answers (Binance → Kraken → Coinbase,
+ * see CANDLE_SOURCES). Only when every venue is unreachable does it drop to CoinGecko's
+ * price-only endpoint (no RSI/EMA/MACD), and finally to the last good reading.
+ */
+export class ExchangeBitcoinProvider implements BitcoinPriceProvider {
   private lastGood: BitcoinTechnicals | null = null;
-  private base = process.env.BINANCE_API_URL ?? 'https://api.binance.com';
+
+  constructor(private readonly fetcher: JsonFetcher = fetchJson) {}
 
   async fetchTechnicals(): Promise<BitcoinTechnicals> {
     const now = Date.now();
     try {
-      const klines = await fetchJson<BinanceKline[]>(
-        `${this.base}/api/v3/klines?symbol=BTCUSDT&interval=1h&limit=500`,
-      );
-      if (!Array.isArray(klines) || klines.length < 30) throw new Error('insufficient kline data');
-
-      const closes = klines.map((k) => Number.parseFloat(k[4]));
-      const volumes = klines.map((k) => Number.parseFloat(k[5]));
+      const { candles, source } = await fetchCandles({ interval: '1h', limit: 500, minCandles: 30 }, this.fetcher, undefined, now);
+      const closes = candles.map((c) => c.close);
+      const volumes = candles.map((c) => c.volume);
       const price = closes[closes.length - 1];
 
       const vol24 = sum(volumes.slice(-24));
@@ -41,24 +42,23 @@ export class BinanceBitcoinProvider implements BitcoinPriceProvider {
         ema50: ema(closes, 50),
         ema200: ema(closes, 200),
         macd: macd(closes),
-        source: 'binance',
+        source,
         timestamp: now,
         freshness: 'fresh',
       };
       this.lastGood = result;
       return result;
-    } catch {
+    } catch (err) {
+      console.warn(`[btc-price] ${err instanceof Error ? err.message : err} — falling back to CoinGecko (price only)`);
       return this.fallbackCoinGecko(now);
     }
   }
 
   private async fallbackCoinGecko(now: number): Promise<BitcoinTechnicals> {
     try {
-      const data = await fetchJson<{
+      const data = await this.fetcher<{
         bitcoin: { usd: number; usd_24h_change?: number; usd_24h_vol?: number };
-      }>(
-        'https://api.coingecko.com/api/v3/simple/price?ids=bitcoin&vs_currencies=usd&include_24hr_change=true&include_24hr_vol=true',
-      );
+      }>('https://api.coingecko.com/api/v3/simple/price?ids=bitcoin&vs_currencies=usd&include_24hr_change=true&include_24hr_vol=true');
       const result: BitcoinTechnicals = {
         price: data.bitcoin.usd,
         change1h: null,

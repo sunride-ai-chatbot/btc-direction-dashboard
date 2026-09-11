@@ -11,6 +11,7 @@ import { Skeleton } from './components/ui';
 // Signal/News/Polymarket/Health tabs stay light on first load.
 const HistoryPage = lazy(() => import('./pages/HistoryPage').then((m) => ({ default: m.HistoryPage })));
 const EvaluationPage = lazy(() => import('./pages/EvaluationPage').then((m) => ({ default: m.EvaluationPage })));
+const DerivativesPage = lazy(() => import('./pages/DerivativesPage').then((m) => ({ default: m.DerivativesPage })));
 
 function PageFallback() {
   return (
@@ -25,6 +26,7 @@ const NAV: Array<{ path: string; labelKey: TranslationKey }> = [
   { path: '/', labelKey: 'nav.signal' },
   { path: '/news', labelKey: 'nav.news' },
   { path: '/polymarket', labelKey: 'nav.polymarket' },
+  { path: '/derivatives', labelKey: 'nav.derivatives' },
   { path: '/history', labelKey: 'nav.history' },
   { path: '/evaluation', labelKey: 'nav.evaluation' },
   { path: '/health', labelKey: 'nav.health' },
@@ -126,6 +128,14 @@ function AppShell() {
             element={
               <Suspense fallback={<PageFallback />}>
                 <EvaluationPage />
+              </Suspense>
+            }
+          />
+          <Route
+            path="/derivatives"
+            element={
+              <Suspense fallback={<PageFallback />}>
+                <DerivativesPage />
               </Suspense>
             }
           />

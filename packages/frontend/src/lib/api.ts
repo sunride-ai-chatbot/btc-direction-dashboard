@@ -124,6 +124,9 @@ export function timeAgo(ts: number, lang: Lang = 'en'): string {
 }
 
 export function formatUsd(value: number, compact = false): string {
+  if (compact && Math.abs(value) >= 1_000_000_000) {
+    return `$${(value / 1_000_000_000).toFixed(2)}B`;
+  }
   if (compact && Math.abs(value) >= 1_000_000) {
     return `$${(value / 1_000_000).toFixed(1)}M`;
   }

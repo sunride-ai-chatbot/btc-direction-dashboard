@@ -45,17 +45,20 @@ No API keys are required. Optional overrides (all have sane defaults):
 | `ETF_FLOWS_FILE` | `./data/etf-flows.json` | manual ETF flow data (see below) |
 | `MACRO_EVENTS_FILE` | `./data/macro-events.json` | editable macro event calendar |
 | `POLYMARKET_GAMMA_URL` | gamma-api.polymarket.com | Polymarket API base |
-| `BINANCE_API_URL` | api.binance.com | Binance API base |
+| `BINANCE_API_URL` / `KRAKEN_API_URL` / `COINBASE_API_URL` | official bases | spot candle sources |
+| `CANDLE_SOURCES` | `binance,kraken,coinbase` | candle venues tried in order (Binance is geo-blocked from some hosts) |
+| `DERIVATIVES` / `REFRESH_DERIVATIVES_MS` | `on` / `120000` | funding / OI / liquidation tracking (zero model weight) |
 
 ## Data sources
 
 | Component | Source | Notes |
 |---|---|---|
 | **Polymarket** (highest weight) | Gamma API (public, keyless) | discovery layer searches active markets by keyword, categorizes (BTC-direct / Fed / inflation / macro / geopolitical), and weights by relevance × log-liquidity. Probability changes are computed from our own stored snapshots. |
-| **BTC technicals** | Binance public klines (CoinGecko price-only fallback) | price, 1h/4h/24h change, volume, volatility, RSI-14, EMA 20/50/200, MACD |
+| **BTC technicals** | hourly candles from the first venue that answers — Binance → Kraken → Coinbase (CoinGecko price-only as a last resort) | price, 1h/4h/24h change, volume, volatility, RSI-14, EMA 20/50/200, MACD; `source` records the venue used |
 | **ETF flows** | manual JSON file | no reliable free real-time API exists. Copy `packages/backend/data/etf-flows.example.json` → `etf-flows.json` and maintain it (e.g. from farside.co.uk/btc). Absent file ⇒ component honestly reports *unavailable* — values are **never fabricated**. |
 | **Macro** | FRED public CSV (keyless) | broad trade-weighted dollar index (DTWEXBGS, public stand-in for DXY), 2Y/10Y Treasury yields. Daily series, ~1 business-day lag. Fed-cut odds are derived from Polymarket Fed markets. |
 | **Liquidity/session** | computed locally | Israel-time trading-session quality + volume quality. Affects **confidence only**, never direction. |
+| **Derivatives** (tracking only, 0% weight) | Kraken Futures, Deribit, BitMEX, Bybit, OKX public endpoints | funding normalized to 8h (venue median), open interest per venue + 24h change from our own history, OKX liquidations (1h window). Own table / `/api/derivatives` / CSV / page — never enters the score. |
 
 Every data point carries `source`, `timestamp`, and `freshness` (fresh / stale / unavailable).
 A dead provider degrades confidence and is labeled in the UI; it never crashes the engine.
@@ -90,8 +93,11 @@ A dead provider degrades confidence and is labeled in the UI; it never crashes t
    15-minute momentum, probability velocity, and path persistence from self-collected snapshots.
 8. **Live consensus price**: Binance/Coinbase/Kraken WebSockets feed a median consensus price
    (streamed to the UI over SSE at `/api/stream`); a >0.5% cross-exchange spread flags a PRICE
-   ANOMALY and lowers confidence. Closed 1-minute Binance candles are persisted
-   (`btc_candles_1m`) and drive an order-flow (CVD) term inside the technical component.
+   ANOMALY and lowers confidence. Every venue's live trades are pooled into our own 1-minute
+   candles (with the real taker buy/sell split), persisted in `btc_candles_1m`, and drive an
+   order-flow (CVD) term inside the technical component — so order flow keeps working wherever
+   at least one exchange feed is reachable. A REST backfill (any venue) fills price gaps but
+   never overwrites a candle that already knows its taker split.
 9. **Honest edge**: every evaluation stores the neutral band that judged it (`fixed-v1` legacy or
    `vol-adaptive-v2` = 0.5×realized σ of the horizon) and the market regime. The edge measure is
    score-sign agreement on non-flat outcomes with 95% Wilson bounds; a horizon shows a

@@ -3,12 +3,15 @@ import { mkdirSync } from 'node:fs';
 import { dirname } from 'node:path';
 import type { Candle1m, Horizon, HorizonSignal, SignalLabel, StoredEvaluation, DivergenceEvent } from '../types.js';
 import type { CmcNewsItem } from '../providers/cmcNews.js';
+import type { VenueReading } from '../providers/derivatives.js';
 import { classifyRegime as regimeFromTechnical } from '../scoring/edge.js';
 
 /**
  * Versioned schema via PRAGMA user_version.
  * v1 — Phase 1 baseline (signals, polymarket_history, btc_price_history, alerts)
  * v2 — Phase 2: signals.raw_label + signals.context_json, evaluations, divergences
+ * v3 — etf_flow_history · v4 — news_items · v5 — evaluation provenance + btc_candles_1m
+ * v6 — nullable candle taker split (exchange-agnostic order flow) + derivatives_history
  * All data lives in one SQLite file; restarts must never lose rows.
  */
 export class SignalDatabase {
@@ -188,6 +191,48 @@ export class SignalDatabase {
         throw err;
       }
     }
+
+    // v6 — order flow no longer depends on Binance's kline stream: candles now come from
+    // pooled live trades (any venue) or a REST backfill that may not know the taker split,
+    // so taker_buy_volume becomes nullable (SQLite cannot relax NOT NULL in place — the
+    // table is rebuilt and the rows copied). Also adds the tracking-only derivatives
+    // history (funding / open interest per venue). Same single-transaction rule as v5.
+    if (this.userVersion < 6) {
+      this.db.exec('BEGIN');
+      try {
+        this.db.exec(`
+          CREATE TABLE btc_candles_1m_v6 (
+            ts INTEGER PRIMARY KEY,
+            open REAL NOT NULL,
+            high REAL NOT NULL,
+            low REAL NOT NULL,
+            close REAL NOT NULL,
+            volume REAL NOT NULL,
+            taker_buy_volume REAL
+          );
+          INSERT INTO btc_candles_1m_v6 (ts, open, high, low, close, volume, taker_buy_volume)
+            SELECT ts, open, high, low, close, volume, taker_buy_volume FROM btc_candles_1m;
+          DROP TABLE btc_candles_1m;
+          ALTER TABLE btc_candles_1m_v6 RENAME TO btc_candles_1m;
+          CREATE TABLE derivatives_history (
+            ts INTEGER NOT NULL,
+            venue TEXT NOT NULL,
+            funding_8h_pct REAL,
+            predicted_funding_8h_pct REAL,
+            oi_btc REAL,
+            oi_usd REAL,
+            mark_price REAL,
+            PRIMARY KEY (ts, venue)
+          );
+          CREATE INDEX idx_deriv_venue_ts ON derivatives_history(venue, ts);
+        `);
+        this.db.exec('PRAGMA user_version = 6');
+        this.db.exec('COMMIT');
+      } catch (err) {
+        this.db.exec('ROLLBACK');
+        throw err;
+      }
+    }
   }
 
   /**
@@ -216,11 +261,17 @@ export class SignalDatabase {
 
   // ---------- 1-minute candles ----------
 
+  /**
+   * Same merge rule as PriceStream.seedCandles: a stored candle that knows its taker split
+   * is never overwritten by one that doesn't (a REST backfill fills gaps, it must not
+   * erase order flow the live trade streams already captured).
+   */
   upsertCandle(c: Candle1m): void {
     this.db
       .prepare(
         `INSERT INTO btc_candles_1m (ts, open, high, low, close, volume, taker_buy_volume) VALUES (?, ?, ?, ?, ?, ?, ?)
-         ON CONFLICT(ts) DO UPDATE SET open = excluded.open, high = excluded.high, low = excluded.low, close = excluded.close, volume = excluded.volume, taker_buy_volume = excluded.taker_buy_volume`,
+         ON CONFLICT(ts) DO UPDATE SET open = excluded.open, high = excluded.high, low = excluded.low, close = excluded.close, volume = excluded.volume, taker_buy_volume = excluded.taker_buy_volume
+         WHERE excluded.taker_buy_volume IS NOT NULL OR btc_candles_1m.taker_buy_volume IS NULL`,
       )
       .run(c.ts, c.open, c.high, c.low, c.close, c.volume, c.takerBuyVolume);
   }
@@ -311,6 +362,55 @@ export class SignalDatabase {
   exportNewsRows(): Array<Record<string, unknown>> {
     return this.db
       .prepare('SELECT post_id, published_ts, fetched_at, source, url, category, relevance, sentiment_score, direction, impact, text FROM news_items ORDER BY published_ts ASC')
+      .all() as unknown as Array<Record<string, unknown>>;
+  }
+
+  // ---------- derivatives (tracking only; not part of model scoring) ----------
+
+  upsertDerivatives(rows: VenueReading[]): void {
+    const stmt = this.db.prepare(
+      `INSERT INTO derivatives_history (ts, venue, funding_8h_pct, predicted_funding_8h_pct, oi_btc, oi_usd, mark_price)
+       VALUES (?, ?, ?, ?, ?, ?, ?)
+       ON CONFLICT(ts, venue) DO UPDATE SET
+         funding_8h_pct = excluded.funding_8h_pct,
+         predicted_funding_8h_pct = excluded.predicted_funding_8h_pct,
+         oi_btc = excluded.oi_btc,
+         oi_usd = excluded.oi_usd,
+         mark_price = excluded.mark_price`,
+    );
+    this.db.exec('BEGIN');
+    try {
+      for (const r of rows) stmt.run(r.ts, r.venue, r.fundingRate8hPct, r.predictedFundingRate8hPct, r.openInterestBtc, r.openInterestUsd, r.markPrice);
+      this.db.exec('COMMIT');
+    } catch (err) {
+      this.db.exec('ROLLBACK');
+      throw err;
+    }
+  }
+
+  /** Chronological per-venue readings since a timestamp. */
+  getDerivativesSince(sinceTs: number): VenueReading[] {
+    const rows = this.db
+      .prepare('SELECT * FROM derivatives_history WHERE ts >= ? ORDER BY ts ASC, venue ASC')
+      .all(sinceTs) as unknown as DerivativesRow[];
+    return rows.map(derivativesRowToReading);
+  }
+
+  /** The newest stored reading of every venue (the stale fallback when no venue answers). */
+  getLatestDerivativesByVenue(): VenueReading[] {
+    const rows = this.db
+      .prepare(
+        `SELECT d.* FROM derivatives_history d
+         WHERE d.ts = (SELECT MAX(ts) FROM derivatives_history WHERE venue = d.venue)
+         ORDER BY d.venue ASC`,
+      )
+      .all() as unknown as DerivativesRow[];
+    return rows.map(derivativesRowToReading);
+  }
+
+  exportDerivativesRows(): Array<Record<string, unknown>> {
+    return this.db
+      .prepare('SELECT ts, venue, funding_8h_pct, predicted_funding_8h_pct, oi_btc, oi_usd, mark_price FROM derivatives_history ORDER BY ts ASC, venue ASC')
       .all() as unknown as Array<Record<string, unknown>>;
   }
 
@@ -559,7 +659,7 @@ export class SignalDatabase {
 
   /** Row counts for every production table — used by /health and import verification. */
   countsByTable(): Record<string, number> {
-    const tables = ['signals', 'evaluations', 'divergences', 'polymarket_history', 'btc_price_history', 'btc_candles_1m', 'alerts', 'news_items'];
+    const tables = ['signals', 'evaluations', 'divergences', 'polymarket_history', 'btc_price_history', 'btc_candles_1m', 'alerts', 'news_items', 'derivatives_history'];
     const out: Record<string, number> = {};
     for (const t of tables) {
       out[t] = (this.db.prepare(`SELECT COUNT(*) AS c FROM ${t}`).get() as { c: number }).c;
@@ -577,6 +677,7 @@ export class SignalDatabase {
     this.db.prepare('DELETE FROM polymarket_history WHERE ts < ?').run(cutoff);
     this.db.prepare('DELETE FROM btc_price_history WHERE ts < ?').run(cutoff);
     this.db.prepare('DELETE FROM btc_candles_1m WHERE ts < ?').run(cutoff);
+    this.db.prepare('DELETE FROM derivatives_history WHERE ts < ?').run(cutoff);
   }
 
   close(): void {
@@ -629,4 +730,26 @@ interface NewsItemRow {
   sentiment_score: number;
   direction: string;
   impact: string;
+}
+
+interface DerivativesRow {
+  ts: number;
+  venue: string;
+  funding_8h_pct: number | null;
+  predicted_funding_8h_pct: number | null;
+  oi_btc: number | null;
+  oi_usd: number | null;
+  mark_price: number | null;
+}
+
+function derivativesRowToReading(row: DerivativesRow): VenueReading {
+  return {
+    venue: row.venue as VenueReading['venue'],
+    ts: row.ts,
+    fundingRate8hPct: row.funding_8h_pct,
+    predictedFundingRate8hPct: row.predicted_funding_8h_pct,
+    openInterestBtc: row.oi_btc,
+    openInterestUsd: row.oi_usd,
+    markPrice: row.mark_price,
+  };
 }

@@ -5,11 +5,13 @@ import { writeFileSync, renameSync, rmSync } from 'node:fs';
 import type { ServerResponse } from 'node:http';
 import { SignalDatabase } from './db/database.js';
 import { GammaPolymarketProvider } from './providers/polymarket.js';
-import { BinanceBitcoinProvider } from './providers/bitcoin.js';
+import { ExchangeBitcoinProvider } from './providers/bitcoin.js';
 import { ManualFileEtfProvider, SosoValueEtfProvider } from './providers/etf.js';
 import { FredMacroProvider } from './providers/macro.js';
 import { CmcNewsProvider, type CmcNewsSnapshot } from './providers/cmcNews.js';
-import { PriceStream, parseRestKline } from './providers/priceStream.js';
+import { DerivativesProvider, buildDerivativesSeries, type DerivativesSnapshot } from './providers/derivatives.js';
+import { PriceStream, EXCHANGES } from './providers/priceStream.js';
+import { fetchCandles } from './providers/candles.js';
 import { runPipeline, type PipelineProviders } from './scoring/pipeline.js';
 import { runEvaluationPass } from './scoring/evaluator.js';
 import { buildAttributionReport, buildDivergenceReport, buildEvaluationReport, buildReliabilityReport } from './scoring/reports.js';
@@ -17,11 +19,10 @@ import { computeAllEdgeStats, driftReport, fitConformal, similarStates, type Eva
 import { detectDivergence } from './scoring/divergence.js';
 import { AlertEngine, DatabaseAlertSink } from './alerts/engine.js';
 import { cached } from './utils/cached.js';
-import { fetchJson } from './utils/fetchJson.js';
 import { HealthRegistry } from './utils/health.js';
 import { toCsv } from './utils/csv.js';
 import {
-  DIVERGENCE_CONFIG, EDGE_GATE_CONFIG, EVALUATION_CONFIG, HORIZON_WEIGHTS, NEUTRAL_THRESHOLD_PCT,
+  DERIVATIVES_CONFIG, DIVERGENCE_CONFIG, EDGE_GATE_CONFIG, EVALUATION_CONFIG, HORIZON_WEIGHTS, NEUTRAL_THRESHOLD_PCT,
   REFRESH_INTERVALS_MS, SERVER_CONFIG, STREAM_CONFIG,
 } from './config.js';
 import { HORIZONS, type ConformalInterval, type EdgeStats, type Horizon, type SignalBundle, type SignalLabel, type PolymarketSnapshot } from './types.js';
@@ -34,11 +35,13 @@ console.log('[startup] node', process.version, '| db:', SERVER_CONFIG.dbPath, '|
 console.log('[startup] row counts:', JSON.stringify(db.countsByTable()));
 
 const polymarketProvider = new GammaPolymarketProvider(db);
-const bitcoinProvider = new BinanceBitcoinProvider();
+const bitcoinProvider = new ExchangeBitcoinProvider();
 const etfProvider = process.env.ETF_SOURCE === 'manual' ? new ManualFileEtfProvider() : new SosoValueEtfProvider(db);
 const macroProvider = new FredMacroProvider();
 const newsProvider = new CmcNewsProvider(db);
 const fetchNews = health.instrument('cmc-news', () => newsProvider.fetchNews());
+const derivativesProvider = new DerivativesProvider(db);
+const fetchDerivatives = health.instrument('derivatives', () => derivativesProvider.fetchSnapshot());
 
 const providers: PipelineProviders = {
   polymarket: { fetchSnapshot: cached(health.instrument('polymarket', () => polymarketProvider.fetchSnapshot()), REFRESH_INTERVALS_MS.polymarket) },
@@ -61,24 +64,30 @@ const stream = new PriceStream(
     }
   },
   600,
-  // A reconnect can leave a gap in the closed-candle series (the socket was down while
-  // minutes closed); re-running the REST backfill on reopen closes that gap. Only Binance
-  // supplies candles, so only its reopen needs this.
-  (ex) => {
-    if (ex === 'binance') void backfillCandles();
-  },
+  // A reconnect can leave a gap in the closed-candle series (every venue's trades feed the
+  // candles, so a single venue's outage only thins them — but a full outage leaves minutes
+  // missing); re-running the REST backfill on any reopen fills price for that gap. The
+  // backfill never overwrites a candle that already has its taker split (see preferCandle).
+  () => scheduleBackfill(),
 );
 stream.seedCandles(db.getRecentCandles(600));
 
+let backfillTimer: NodeJS.Timeout | null = null;
+function scheduleBackfill(): void {
+  // Several venues reopening at once (a network blip) must trigger one backfill, not three.
+  if (backfillTimer) return;
+  backfillTimer = setTimeout(() => {
+    backfillTimer = null;
+    void backfillCandles();
+  }, 10_000);
+}
+
 async function backfillCandles(): Promise<void> {
   try {
-    const base = process.env.BINANCE_API_URL ?? 'https://api.binance.com';
-    const rows = await fetchJson<unknown[][]>(`${base}/api/v3/klines?symbol=BTCUSDT&interval=1m&limit=${STREAM_CONFIG.candleBackfillLimit}`);
-    // The last row is the still-open minute — never persist it as closed.
-    const closed = rows.slice(0, -1).map(parseRestKline).filter((c): c is NonNullable<typeof c> => c !== null);
-    stream.seedCandles(closed);
-    db.upsertCandles(closed);
-    console.log(`[stream] backfilled ${closed.length} 1m candles`);
+    const { candles, source } = await fetchCandles({ interval: '1m', limit: STREAM_CONFIG.candleBackfillLimit });
+    stream.seedCandles(candles);
+    db.upsertCandles(candles);
+    console.log(`[stream] backfilled ${candles.length} 1m candles from ${source}`);
   } catch (err) {
     console.error('[stream] candle backfill failed:', err instanceof Error ? err.message : err);
   }
@@ -96,7 +105,7 @@ function reportStreamHealth(): void {
   health.report('btc-stream', {
     freshness: st.freshness,
     latencyMs: st.lastTickTs ? Date.now() - st.lastTickTs : null,
-    note: `${connected}/3 exchanges connected · ${st.reconnects} reconnects`,
+    note: `${connected}/${EXCHANGES.length} exchanges connected · ${st.reconnects} reconnects · CVD from ${stream.recentCandles(240).filter((c) => c.takerBuyVolume !== null).length} candles with taker split`,
     failed: st.freshness === 'unavailable',
   });
 }
@@ -182,6 +191,7 @@ function enrichFor(horizon: Horizon) {
 let latestBundle: SignalBundle | null = null;
 let latestPolySnapshot: PolymarketSnapshot | null = null;
 let latestNews: CmcNewsSnapshot | null = null;
+let latestDerivatives: DerivativesSnapshot | null = null;
 // Survive restarts: hysteresis continues from the last persisted labels and the
 // persist cadence continues from the last stored signal timestamp.
 let stableLabels: Partial<Record<Horizon, SignalLabel>> = db.getLatestLabels();
@@ -243,6 +253,15 @@ async function refreshNews(): Promise<void> {
   }
 }
 
+async function refreshDerivatives(): Promise<void> {
+  if (shuttingDown || !DERIVATIVES_CONFIG.enabled) return;
+  try {
+    latestDerivatives = await fetchDerivatives();
+  } catch (err) {
+    console.error('[derivatives] refresh failed:', err instanceof Error ? err.message : err);
+  }
+}
+
 function evaluateDueSignals(): void {
   if (shuttingDown) return;
   try {
@@ -260,7 +279,7 @@ await app.register(cors, {
   origin: SERVER_CONFIG.corsOrigin ? SERVER_CONFIG.corsOrigin.split(',').map((s) => s.trim()) : true,
 });
 
-const CADENCE = { polymarket: 'realtime', 'btc-price': 'realtime', 'btc-stream': 'realtime', macro: 'daily', etf: 'daily', 'cmc-news': 'realtime' } as const;
+const CADENCE = { polymarket: 'realtime', 'btc-price': 'realtime', 'btc-stream': 'realtime', macro: 'daily', etf: 'daily', 'cmc-news': 'realtime', derivatives: 'realtime' } as const;
 
 // Railway health check + ops summary. 503 until the scheduler is initialized
 // and whenever SQLite stops answering. No secrets in the payload.
@@ -381,6 +400,15 @@ app.get('/api/news', async (_req, reply) => {
   };
 });
 
+/** Derivatives positioning — tracking only (zero model weight), plus the last 24h as a chartable series. */
+app.get('/api/derivatives', async (_req, reply) => {
+  if (!DERIVATIVES_CONFIG.enabled) return reply.code(404).send({ error: 'Derivatives tracking is disabled (DERIVATIVES=off)' });
+  const snapshot = latestDerivatives;
+  if (!snapshot) return reply.code(503).send({ error: 'Derivatives data has not loaded yet' });
+  const history = buildDerivativesSeries(db.getDerivativesSince(Date.now() - DERIVATIVES_CONFIG.historyLookbackMs));
+  return { ...snapshot, modelWeight: 0, trackingOnly: true, history };
+});
+
 app.get('/api/health', async () => {
   reportStreamHealth();
   const snap = health.snapshot(CADENCE);
@@ -428,6 +456,7 @@ const EXPORTS: Record<string, () => Array<Record<string, unknown>>> = {
   'evaluations.csv': () => db.exportEvaluationRows(),
   'polymarket_snapshots.csv': () => db.exportSnapshotRows(),
   'news.csv': () => db.exportNewsRows(),
+  'derivatives.csv': () => db.exportDerivativesRows(),
 };
 
 app.get<{ Params: { file: string } }>('/api/export/:file', async (req, reply) => {
@@ -483,6 +512,10 @@ function shutdown(signal: string): void {
   shuttingDown = true;
   console.log(`[shutdown] ${signal} received — stopping schedulers, stream, server and DB`);
   for (const t of timers) clearInterval(t);
+  // Persist any minute that is already complete before the sockets go away.
+  try {
+    stream.flushCandles();
+  } catch {}
   stream.stop();
   for (const res of sseClients) {
     try {
@@ -531,16 +564,18 @@ async function main(): Promise<void> {
   }
   await computeSignals();
   await refreshNews();
+  await refreshDerivatives();
   evaluateDueSignals();
   timers.push(setInterval(computeSignals, REFRESH_INTERVALS_MS.signalCompute));
   timers.push(setInterval(refreshNews, REFRESH_INTERVALS_MS.news));
+  timers.push(setInterval(refreshDerivatives, REFRESH_INTERVALS_MS.derivatives));
   timers.push(setInterval(evaluateDueSignals, EVALUATION_CONFIG.jobIntervalMs));
   timers.push(setInterval(() => db.pruneOldData(30 * 24 * 3_600_000), 6 * 3_600_000));
   timers.push(
     setInterval(() => {
       const c = db.countsByTable();
       const st = stream.status();
-      console.log('[heartbeat]', JSON.stringify({ signals: c.signals, evaluations: c.evaluations, snapshots: c.polymarket_history, candles: c.btc_candles_1m, stream: st.freshness, sse: sseClients.size, edge: edgeCache ? Object.fromEntries(HORIZONS.map((h) => [h, edgeCache!.stats[h].status])) : null }));
+      console.log('[heartbeat]', JSON.stringify({ signals: c.signals, evaluations: c.evaluations, snapshots: c.polymarket_history, candles: c.btc_candles_1m, derivatives: c.derivatives_history, stream: st.freshness, cvd: stream.cvd().ratio1h, sse: sseClients.size, edge: edgeCache ? Object.fromEntries(HORIZONS.map((h) => [h, edgeCache!.stats[h].status])) : null }));
     }, 3_600_000),
   );
   schedulersStarted = true;

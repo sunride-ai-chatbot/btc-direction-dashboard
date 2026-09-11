@@ -283,3 +283,36 @@ export interface NewsPayload {
   modelWeight: number;
   trackingOnly: boolean;
 }
+
+export type DerivativesVenue = 'kraken-futures' | 'deribit' | 'bitmex' | 'bybit' | 'okx';
+
+export interface VenueReading {
+  venue: DerivativesVenue;
+  ts: number;
+  /** Funding normalized to one 8-hour period, in percent. */
+  fundingRate8hPct: number | null;
+  predictedFundingRate8hPct: number | null;
+  openInterestBtc: number | null;
+  openInterestUsd: number | null;
+  markPrice: number | null;
+}
+
+export interface DerivativesPayload {
+  venues: VenueReading[];
+  fundingRate8hPct: number | null;
+  fundingAnnualizedPct: number | null;
+  fundingSpreadPct: number | null;
+  openInterestUsd: number | null;
+  openInterestBtc: number | null;
+  oiChange24hPct: number | null;
+  fundingAvg24hPct: number | null;
+  liquidations: { windowMinutes: number; longUsd: number; shortUsd: number; count: number; venues: string[] } | null;
+  positioning: { state: 'long-crowded' | 'short-crowded' | 'balanced' | 'unknown'; note: string };
+  source: string;
+  timestamp: number;
+  freshness: Freshness;
+  available: boolean;
+  modelWeight: number;
+  trackingOnly: boolean;
+  history: Array<{ ts: number; fundingRate8hPct: number | null; openInterestUsd: number | null; venues: number }>;
+}

@@ -275,3 +275,41 @@ Key judgment calls made while building the MVP, so they can be revisited deliber
     CUSUM (reference 0.5, k = 0.05, h = 8) that raises a `model-drift` alert when agreement runs
     persistently below 50%. Weights and confidence remain untouched by all of this — Phase 5
     measures; Phase 6 (ensemble / shadow model) may act on it once edge exists.
+
+## Data foundation (Phase 6a — make the inputs real before touching the model)
+
+60. **Exchange-agnostic candles (supersedes the Binance-only parts of #50/#52)**: Binance is
+    geo-blocked (HTTP 451) from Railway's US region, which had silently left production without
+    RSI/EMA/MACD (the CoinGecko price-only fallback) and without any order flow at all. Hourly
+    technicals and the 1-minute backfill now come from the first venue that answers in
+    `CANDLE_SOURCES` (Binance → Kraken → Coinbase, `providers/candles.ts`), each given ONE fast
+    attempt so fail-over takes seconds, not retry backoffs. `BitcoinTechnicals.source` records
+    which venue produced the numbers. Kraken/Coinbase REST candles carry no taker split, so
+    `Candle1m.takerBuyVolume` became nullable (DB v6 rebuilds the table inside one transaction —
+    SQLite cannot relax NOT NULL in place). Coinbase rows are `[time, low, high, open, close, vol]`
+    (not OHLC order) and a candle only counts as closed once its whole interval is in the past.
+61. **Order flow from pooled live trades, not one venue's kline stream**: every connected
+    exchange's trade feed (Binance `@trade` maker flag, Coinbase `matches` where `side` is the
+    MAKER side, Kraken `trade` where the side is the TAKER's) is bucketed into our own 1-minute
+    candles (`TradeCandleBuilder`, 3 s grace so a late trade from a slower venue lands in its
+    own minute). CVD therefore works wherever at least one trade feed is up. Candles without a
+    split are excluded from CVD rather than counted as a fabricated 50/50, and a split-less
+    backfill candle never overwrites one that has a split (`preferCandle`, mirrored in the SQL
+    upsert `WHERE`). Basis rule: a candle's buy volume and total volume always come from the
+    same trades, so the ratio stays meaningful even though venues are pooled.
+62. **Derivatives positioning is tracking-only — the CMC-news contract, verbatim**: funding /
+    open interest / liquidations from Kraken Futures, Deribit, BitMEX, Bybit and OKX are fetched
+    in parallel (`Promise.allSettled`; any subset suffices, the unreachable ones are named in
+    `source`). Funding is normalized to 8 hours before venues are compared — Kraken Futures
+    publishes an ABSOLUTE hourly amount in quote currency (÷ mark price × 8), the others are
+    already 8h fractions — and aggregated as the venue MEDIAN so one venue cannot move it. OI is
+    summed only across the venues that answered, and its 24h change compares each venue against
+    OUR OWN reading ~24h earlier (null until that history exists — never a fake 0). Zero model
+    weight, own table (`derivatives_history`, pruned with the other time series), own route
+    (`/api/derivatives`), CSV and page. It must not enter `HORIZON_WEIGHTS` / `ComponentSet`
+    until an evaluation shows it carries information about realized moves. The positioning
+    thresholds (≥ 0.03% / 8h long-crowded, ≤ −0.01% short-crowded, ~0.01% neutral) are a
+    crowdedness read, explicitly not a direction call.
+63. **Liquidations only where the venue timestamps them**: OKX's `liquidation-orders` carries a
+    per-order `ts`, so a 1-hour window is honest (USD = contracts × 0.01 BTC × bankruptcy price).
+    BitMEX's `/liquidation` rows have no timestamp and are therefore not used at all.

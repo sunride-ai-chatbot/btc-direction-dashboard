@@ -3,7 +3,7 @@ import { median } from '../utils/stats.js';
 import type { Candle1m, CvdSnapshot, ExchangeTick, PriceConsensus } from '../types.js';
 
 export type ExchangeName = 'binance' | 'coinbase' | 'kraken';
-const EXCHANGES: ExchangeName[] = ['binance', 'coinbase', 'kraken'];
+export const EXCHANGES: ExchangeName[] = ['binance', 'coinbase', 'kraken'];
 
 // ---------- pure functions (unit-tested) ----------
 
@@ -47,17 +47,19 @@ export function computeConsensus(
  * The window is TIME-bounded (by candle timestamp), not count-bounded: a gap in the
  * candle series (a WebSocket outage) shrinks the sample instead of silently
  * stretching the window to cover a longer real period than its label says.
+ * Candles without a taker split (REST backfill from venues that don't publish one)
+ * are excluded — they carry price, not order flow.
  */
 export function computeCvd(candles: Candle1m[], windows = { m15: 15, h1: 60, h4: 240 }, minCandles = 15): CvdSnapshot {
   const newest = candles.length > 0 ? candles[candles.length - 1].ts : null;
   const ratio = (n: number): number | null => {
     if (newest === null) return null;
-    const slice = candles.filter((c) => c.ts > newest - n * 60_000);
+    const slice = candles.filter((c) => c.ts > newest - n * 60_000 && c.takerBuyVolume !== null);
     if (slice.length < minCandles) return null;
     let buy = 0;
     let total = 0;
     for (const c of slice) {
-      buy += c.takerBuyVolume;
+      buy += c.takerBuyVolume!;
       total += c.volume;
     }
     if (total <= 0) return null;
@@ -76,24 +78,65 @@ export function parseRestKline(row: unknown[]): Candle1m | null {
   return [c.open, c.high, c.low, c.close, c.volume, c.takerBuyVolume].every(Number.isFinite) ? c : null;
 }
 
-interface BinanceKlineEvent {
-  k: { t: number; o: string; h: string; l: string; c: string; v: string; V: string; x: boolean };
+/**
+ * Merge rule shared by the in-memory series and the DB: a candle that knows its taker
+ * split is never replaced by one that doesn't, so a REST backfill (no split) can fill
+ * gaps without erasing the order-flow information the live trade streams captured.
+ */
+export function preferCandle(existing: Candle1m | undefined, incoming: Candle1m): Candle1m {
+  if (existing && existing.takerBuyVolume !== null && incoming.takerBuyVolume === null) return existing;
+  return incoming;
 }
 
-export function parseWsKline(data: BinanceKlineEvent): { candle: Candle1m; closed: boolean } | null {
-  const k = data?.k;
-  if (!k) return null;
-  const candle: Candle1m = {
-    ts: k.t,
-    open: Number.parseFloat(k.o),
-    high: Number.parseFloat(k.h),
-    low: Number.parseFloat(k.l),
-    close: Number.parseFloat(k.c),
-    volume: Number.parseFloat(k.v),
-    takerBuyVolume: Number.parseFloat(k.V),
-  };
-  if (![candle.open, candle.high, candle.low, candle.close, candle.volume, candle.takerBuyVolume].every(Number.isFinite)) return null;
-  return { candle, closed: k.x === true };
+export interface Trade {
+  price: number;
+  size: number;
+  /** True when the aggressor bought (lifted the ask). */
+  takerBuy: boolean;
+  ts: number;
+}
+
+/**
+ * Builds 1-minute candles from live trades, pooled across exchanges. A minute is only
+ * closed once it is graceMs in the past, so a late trade from a slower venue still
+ * lands in the right bucket instead of leaking into the next one.
+ */
+export class TradeCandleBuilder {
+  private buckets = new Map<number, Candle1m>();
+
+  constructor(private graceMs = STREAM_CONFIG.tradeCandleGraceMs) {}
+
+  add(t: Trade): void {
+    if (!Number.isFinite(t.price) || !Number.isFinite(t.size) || t.size <= 0 || !Number.isFinite(t.ts)) return;
+    const minute = Math.floor(t.ts / 60_000) * 60_000;
+    const buy = t.takerBuy ? t.size : 0;
+    const b = this.buckets.get(minute);
+    if (!b) {
+      this.buckets.set(minute, { ts: minute, open: t.price, high: t.price, low: t.price, close: t.price, volume: t.size, takerBuyVolume: buy });
+      return;
+    }
+    b.high = Math.max(b.high, t.price);
+    b.low = Math.min(b.low, t.price);
+    b.close = t.price;
+    b.volume += t.size;
+    b.takerBuyVolume = (b.takerBuyVolume ?? 0) + buy;
+  }
+
+  /** Candles whose minute ended at least graceMs ago (chronological); they leave the builder. */
+  closeDue(now: number): Candle1m[] {
+    const out: Candle1m[] = [];
+    for (const [minute, c] of this.buckets) {
+      if (minute + 60_000 + this.graceMs <= now) {
+        out.push(c);
+        this.buckets.delete(minute);
+      }
+    }
+    return out.sort((a, b) => a.ts - b.ts);
+  }
+
+  get pending(): number {
+    return this.buckets.size;
+  }
 }
 
 // ---------- live stream ----------
@@ -109,8 +152,9 @@ type Listener = (c: PriceConsensus, cvd: CvdSnapshot) => void;
 
 /**
  * Multi-exchange BTC/USD WebSocket aggregator (Binance, Coinbase, Kraken) with
- * exponential-backoff reconnects. Binance's 1-minute kline stream feeds closed
- * candles to a persistence callback (our own candle history + CVD).
+ * exponential-backoff reconnects. Every exchange's trade feed is pooled into our own
+ * 1-minute candles (with the real taker buy/sell split) — no venue-specific kline
+ * stream is needed, so order flow keeps working wherever at least one venue is reachable.
  * Uses the global WebSocket available in Node ≥ 22 — no dependency.
  */
 export class PriceStream {
@@ -121,7 +165,8 @@ export class PriceStream {
   private everOpened: Record<ExchangeName, boolean> = { binance: false, coinbase: false, kraken: false };
   private reconnectTimers: Partial<Record<ExchangeName, NodeJS.Timeout>> = {};
   private candles: Candle1m[] = [];
-  private liveCandle: Candle1m | null = null;
+  private builder = new TradeCandleBuilder();
+  private flushTimer: NodeJS.Timeout | null = null;
   private listeners = new Set<Listener>();
   private stopped = false;
   private reconnects = 0;
@@ -139,7 +184,7 @@ export class PriceStream {
   /** Seed candle history (e.g. from REST backfill or the DB) before/after connecting. */
   seedCandles(candles: Candle1m[]): void {
     const byTs = new Map<number, Candle1m>();
-    for (const c of [...this.candles, ...candles]) byTs.set(c.ts, c);
+    for (const c of [...this.candles, ...candles]) byTs.set(c.ts, preferCandle(byTs.get(c.ts), c));
     this.candles = [...byTs.values()].sort((a, b) => a.ts - b.ts).slice(-this.maxCandles);
   }
 
@@ -149,10 +194,12 @@ export class PriceStream {
       return;
     }
     for (const ex of EXCHANGES) this.connect(ex);
+    this.flushTimer = setInterval(() => this.flushCandles(), STREAM_CONFIG.tradeCandleFlushMs);
   }
 
   stop(): void {
     this.stopped = true;
+    if (this.flushTimer) clearInterval(this.flushTimer);
     for (const t of Object.values(this.reconnectTimers)) if (t) clearTimeout(t);
     for (const ws of Object.values(this.sockets)) {
       try {
@@ -188,6 +235,14 @@ export class PriceStream {
     };
   }
 
+  /** Close every minute that is due; exposed for tests and for a final flush on shutdown. */
+  flushCandles(now = Date.now()): void {
+    for (const c of this.builder.closeDue(now)) {
+      this.seedCandles([c]);
+      this.onClosedCandle(c);
+    }
+  }
+
   // ----- internals -----
 
   private connect(ex: ExchangeName): void {
@@ -210,9 +265,10 @@ export class PriceStream {
       if (this.everOpened[ex]) this.onReopen?.(ex);
       this.everOpened[ex] = true;
       if (ex === 'coinbase') {
-        ws.send(JSON.stringify({ type: 'subscribe', product_ids: ['BTC-USD'], channels: ['ticker'] }));
+        ws.send(JSON.stringify({ type: 'subscribe', product_ids: ['BTC-USD'], channels: ['ticker', 'matches'] }));
       } else if (ex === 'kraken') {
         ws.send(JSON.stringify({ event: 'subscribe', pair: ['XBT/USD'], subscription: { name: 'ticker' } }));
+        ws.send(JSON.stringify({ event: 'subscribe', pair: ['XBT/USD'], subscription: { name: 'trade' } }));
       }
     };
     ws.onmessage = (ev) => {
@@ -244,31 +300,37 @@ export class PriceStream {
     const msg = JSON.parse(raw) as unknown;
     const now = Date.now();
     if (ex === 'binance') {
+      // Combined-stream envelope: { stream, data: { p: price, q: qty, T: tradeTime, m: buyerIsMaker } }
       const env = msg as { stream?: string; data?: Record<string, unknown> };
-      if (!env.data) return;
-      if (env.stream?.endsWith('@trade')) {
-        const price = Number.parseFloat(String(env.data.p));
-        if (Number.isFinite(price)) this.tick(ex, price, now);
-      } else if (env.stream?.endsWith('@kline_1m')) {
-        const parsed = parseWsKline(env.data as unknown as BinanceKlineEvent);
-        if (!parsed) return;
-        this.liveCandle = parsed.candle;
-        if (parsed.closed) {
-          this.seedCandles([parsed.candle]);
-          this.onClosedCandle(parsed.candle);
-        }
-      }
+      if (!env.data || !env.stream?.endsWith('@trade')) return;
+      const price = Number.parseFloat(String(env.data.p));
+      if (!Number.isFinite(price)) return;
+      this.tick(ex, price, now);
+      const ts = Number(env.data.T);
+      this.builder.add({ price, size: Number.parseFloat(String(env.data.q)), takerBuy: env.data.m === false, ts: Number.isFinite(ts) ? ts : now });
     } else if (ex === 'coinbase') {
-      const m = msg as { type?: string; price?: string };
+      const m = msg as { type?: string; price?: string; size?: string; side?: string; time?: string };
       if (m.type === 'ticker' && m.price) {
         const price = Number.parseFloat(m.price);
         if (Number.isFinite(price)) this.tick(ex, price, now);
+      } else if (m.type === 'match' && m.price && m.size) {
+        // `side` is the MAKER side: a sell-side maker means the taker bought.
+        const ts = m.time ? Date.parse(m.time) : NaN;
+        this.builder.add({ price: Number.parseFloat(m.price), size: Number.parseFloat(m.size), takerBuy: m.side === 'sell', ts: Number.isFinite(ts) ? ts : now });
       }
     } else if (ex === 'kraken') {
-      if (Array.isArray(msg) && msg.length >= 4 && msg[2] === 'ticker') {
+      if (!Array.isArray(msg) || msg.length < 4) return;
+      if (msg[2] === 'ticker') {
         const payload = msg[1] as { c?: [string, string] };
         const price = Number.parseFloat(payload?.c?.[0] ?? '');
         if (Number.isFinite(price)) this.tick(ex, price, now);
+      } else if (msg[2] === 'trade' && Array.isArray(msg[1])) {
+        // [[price, volume, time(s), side 'b'|'s' (taker), orderType, misc], …]
+        for (const row of msg[1] as unknown[]) {
+          if (!Array.isArray(row) || row.length < 4) continue;
+          const ts = Number.parseFloat(String(row[2])) * 1000;
+          this.builder.add({ price: Number.parseFloat(String(row[0])), size: Number.parseFloat(String(row[1])), takerBuy: row[3] === 'b', ts: Number.isFinite(ts) ? ts : now });
+        }
       }
     }
   }

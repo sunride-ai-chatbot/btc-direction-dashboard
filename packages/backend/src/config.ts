@@ -26,8 +26,27 @@ export const REFRESH_INTERVALS_MS = {
   macro: envInt('REFRESH_MACRO_MS', 900_000),
   etf: envInt('REFRESH_ETF_MS', 3_600_000),
   news: envInt('REFRESH_NEWS_MS', 5 * 60_000),
+  derivatives: envInt('REFRESH_DERIVATIVES_MS', 2 * 60_000),
   signalCompute: envInt('REFRESH_SIGNAL_MS', 60_000),
 };
+
+/** REST bases for spot candle sources (override for proxies/mirrors). */
+export const EXCHANGE_API = {
+  binance: process.env.BINANCE_API_URL ?? 'https://api.binance.com',
+  kraken: process.env.KRAKEN_API_URL ?? 'https://api.kraken.com',
+  coinbase: process.env.COINBASE_API_URL ?? 'https://api.exchange.coinbase.com',
+};
+
+/**
+ * Candle sources are tried in this order until one answers; Binance is geo-blocked from
+ * some hosting regions (HTTP 451), so Kraken/Coinbase keep technicals and the 1-minute
+ * candle backfill alive there. Kraken/Coinbase candles carry no taker split (CVD comes
+ * from the live trade streams instead).
+ */
+export const CANDLE_SOURCES = (process.env.CANDLE_SOURCES ?? 'binance,kraken,coinbase')
+  .split(',')
+  .map((s) => s.trim())
+  .filter((s): s is 'binance' | 'kraken' | 'coinbase' => s === 'binance' || s === 'kraken' || s === 'coinbase');
 
 export const FRESHNESS_LIMITS_MS = {
   btcPrice: 5 * 60_000,
@@ -131,7 +150,7 @@ export const DIVERGENCE_CONFIG = {
  */
 export const STREAM_CONFIG = {
   enabled: process.env.PRICE_STREAM !== 'off',
-  binanceWs: process.env.BINANCE_WS_URL ?? 'wss://stream.binance.com:9443/stream?streams=btcusdt@trade/btcusdt@kline_1m',
+  binanceWs: process.env.BINANCE_WS_URL ?? 'wss://stream.binance.com:9443/stream?streams=btcusdt@trade',
   coinbaseWs: process.env.COINBASE_WS_URL ?? 'wss://ws-feed.exchange.coinbase.com',
   krakenWs: process.env.KRAKEN_WS_URL ?? 'wss://ws.kraken.com',
   tickFreshMs: 15_000,
@@ -142,6 +161,34 @@ export const STREAM_CONFIG = {
   candleBackfillLimit: 300,
   reconnectBaseMs: 2_000,
   reconnectMaxMs: 60_000,
+  /**
+   * 1-minute candles (and the taker buy/sell split behind CVD) are built from the live
+   * trade streams of every connected exchange. A minute is closed only once it is this
+   * far in the past, so a late trade from a slower venue still lands in the right minute.
+   */
+  tradeCandleGraceMs: 3_000,
+  tradeCandleFlushMs: 5_000,
+};
+
+/**
+ * Derivatives positioning (funding / open interest / liquidations) — tracking-only,
+ * exactly like CMC news: zero model weight, its own table, route and CSV. Venues are
+ * queried in parallel and any subset may answer; funding is normalized to an 8-hour
+ * rate before venues are compared.
+ */
+export const DERIVATIVES_CONFIG = {
+  enabled: process.env.DERIVATIVES !== 'off',
+  krakenFuturesApi: process.env.KRAKEN_FUTURES_API_URL ?? 'https://futures.kraken.com',
+  deribitApi: process.env.DERIBIT_API_URL ?? 'https://www.deribit.com',
+  bitmexApi: process.env.BITMEX_API_URL ?? 'https://www.bitmex.com',
+  bybitApi: process.env.BYBIT_API_URL ?? 'https://api.bybit.com',
+  okxApi: process.env.OKX_API_URL ?? 'https://www.okx.com',
+  requestTimeoutMs: 6_000,
+  /** Positioning read on the venue-median 8h funding rate, in % (0.01% ≈ neutral). */
+  crowdedLongPct: 0.03,
+  crowdedShortPct: -0.01,
+  liquidationWindowMinutes: 60,
+  historyLookbackMs: 24 * 3_600_000,
 };
 
 /**

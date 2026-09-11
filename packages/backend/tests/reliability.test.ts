@@ -4,7 +4,7 @@ import { mkdtempSync, rmSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { bernoulliCusum, conformalQuantile, linearFit, quantile, wilsonInterval } from '../src/utils/stats.js';
-import { computeConsensus, computeCvd, parseRestKline, parseWsKline } from '../src/providers/priceStream.js';
+import { computeConsensus, computeCvd, parseRestKline } from '../src/providers/priceStream.js';
 import {
   classifyRegime, computeEdgeStats, conformalCoverage, driftReport, fitConformal, neutralBandPct,
   realizedHorizonSigmaPct, scoreBucket, similarStates, thinToNonOverlapping, HORIZON_MINUTES, type EvalLike,
@@ -134,7 +134,7 @@ describe('CVD from 1-minute candles', () => {
     // The old (buggy) count-based behavior on this exact data, for contrast:
     const buggyRatio4h = (() => {
       const slice = withGap.slice(-240);
-      const buy = slice.reduce((a, c) => a + c.takerBuyVolume, 0);
+      const buy = slice.reduce((a, c) => a + (c.takerBuyVolume ?? 0), 0);
       const total = slice.reduce((a, c) => a + c.volume, 0);
       return (buy - (total - buy)) / total;
     })();
@@ -147,13 +147,10 @@ describe('CVD from 1-minute candles', () => {
     expect(cvd.ratio4h!).toBeLessThan(0); // fixed: correctly excludes the pre-gap block
   });
 
-  it('parses REST and WS kline shapes', () => {
+  it('parses the Binance REST kline shape (taker buy volume at index 9)', () => {
     const rest = parseRestKline([NOW, '1', '2', '0.5', '1.5', '100', 0, '0', 5, '60', '0', '0'])!;
     expect(rest.takerBuyVolume).toBe(60);
     expect(rest.close).toBe(1.5);
-    const ws = parseWsKline({ k: { t: NOW, o: '1', h: '2', l: '0.5', c: '1.5', v: '100', V: '40', x: true } })!;
-    expect(ws.closed).toBe(true);
-    expect(ws.candle.takerBuyVolume).toBe(40);
     expect(parseRestKline(['x'])).toBeNull();
   });
 });
@@ -568,10 +565,74 @@ describe('v5 migration crash-safety', () => {
       recovered.close();
 
       const final = new DatabaseSync(path);
-      expect((final.prepare('PRAGMA user_version').get() as { user_version: number }).user_version).toBe(5);
+      expect((final.prepare('PRAGMA user_version').get() as { user_version: number }).user_version).toBe(6);
       final.close();
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }
+  });
+});
+
+/** A genuine v5 database: the v4 fixture plus exactly the DDL the v5 step applied, including the NOT NULL taker column. */
+function createV5Database(path: string): void {
+  createV4Database(path);
+  const db = new DatabaseSync(path);
+  db.exec(`
+    ALTER TABLE evaluations ADD COLUMN band_pct REAL;
+    ALTER TABLE evaluations ADD COLUMN band_method TEXT;
+    ALTER TABLE evaluations ADD COLUMN regime TEXT;
+    CREATE TABLE btc_candles_1m (
+      ts INTEGER PRIMARY KEY, open REAL NOT NULL, high REAL NOT NULL, low REAL NOT NULL, close REAL NOT NULL,
+      volume REAL NOT NULL, taker_buy_volume REAL NOT NULL
+    );
+    INSERT INTO btc_candles_1m VALUES (60000, 1, 2, 0.5, 1.5, 100, 60);
+    PRAGMA user_version = 5;
+  `);
+  db.close();
+}
+
+describe('v6 migration — nullable taker split + derivatives history', () => {
+  it('rebuilds btc_candles_1m keeping every row, accepts candles without a taker split, and adds derivatives_history', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'btcdb-v6-'));
+    const path = join(dir, 'test.db');
+    try {
+      createV5Database(path);
+      const db = new SignalDatabase(path);
+      expect(db.countsByTable().btc_candles_1m).toBe(1);
+      expect(db.countsByTable().derivatives_history).toBe(0);
+      expect(db.getRecentCandles(10)[0].takerBuyVolume).toBe(60);
+
+      // The v5 schema would have rejected this (NOT NULL); v6 must accept it.
+      db.upsertCandle({ ts: 120_000, open: 1, high: 1, low: 1, close: 1, volume: 5, takerBuyVolume: null });
+      const candles = db.getRecentCandles(10);
+      expect(candles.map((c) => c.takerBuyVolume)).toEqual([60, null]);
+      db.close();
+
+      const final = new DatabaseSync(path);
+      expect((final.prepare('PRAGMA user_version').get() as { user_version: number }).user_version).toBe(6);
+      expect(final.prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'btc_candles_1m_v6'").all()).toHaveLength(0);
+      final.close();
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('never lets a backfill candle without a taker split overwrite one that has it (DB side of preferCandle)', () => {
+    const db = new SignalDatabase(':memory:');
+    db.upsertCandle({ ts: 60_000, open: 1, high: 1, low: 1, close: 1, volume: 10, takerBuyVolume: 7 });
+    db.upsertCandle({ ts: 60_000, open: 2, high: 2, low: 2, close: 2, volume: 20, takerBuyVolume: null });
+    let [c] = db.getRecentCandles(1);
+    expect(c.takerBuyVolume).toBe(7);
+    expect(c.volume).toBe(10); // the whole candle is kept, not just the split — buy/volume must share a basis
+    // A candle WITH a split may replace either kind.
+    db.upsertCandle({ ts: 60_000, open: 3, high: 3, low: 3, close: 3, volume: 30, takerBuyVolume: 9 });
+    [c] = db.getRecentCandles(1);
+    expect(c.takerBuyVolume).toBe(9);
+    expect(c.volume).toBe(30);
+    // A split-less candle may replace a split-less one (newer backfill wins).
+    db.upsertCandle({ ts: 120_000, open: 1, high: 1, low: 1, close: 1, volume: 1, takerBuyVolume: null });
+    db.upsertCandle({ ts: 120_000, open: 4, high: 4, low: 4, close: 4, volume: 4, takerBuyVolume: null });
+    expect(db.getRecentCandles(1)[0].volume).toBe(4);
+    db.close();
   });
 });

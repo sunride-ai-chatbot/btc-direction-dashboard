@@ -185,7 +185,12 @@ export interface Candle1m {
   low: number;
   close: number;
   volume: number;
-  takerBuyVolume: number;
+  /**
+   * Volume bought by takers (aggressors). null when the source cannot tell the taker
+   * side apart (Kraken/Coinbase REST candles) — such candles are excluded from CVD
+   * rather than fabricated as a 50/50 split.
+   */
+  takerBuyVolume: number | null;
 }
 
 export interface CvdSnapshot {
