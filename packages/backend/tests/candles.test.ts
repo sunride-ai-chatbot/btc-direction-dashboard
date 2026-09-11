@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { fetchCandles, parseBinanceKlines, parseCoinbaseCandles, parseKrakenOhlc } from '../src/providers/candles.js';
+import { fetchCandleHistory, fetchCandles, parseBinanceKlines, parseCoinbaseCandles, parseKrakenOhlc } from '../src/providers/candles.js';
 
 // Real payload shapes captured from each venue on 2026-09-11.
 const NOW = 1789122340000;
@@ -72,6 +72,30 @@ describe('fetchCandles fallback chain', () => {
     expect(series.source).toBe('kraken');
     expect(series.candles).toHaveLength(50);
     expect(series.candles[49].close).toBe(70049);
+  });
+
+  it('pages deep 1-minute history oldest → newest through `since`, de-duplicating overlapping pages', async () => {
+    const minute = 60_000;
+    const from = NOW - 30 * minute; // ask for 30 minutes; the venue serves 12 rows per page
+    const urls: string[] = [];
+    const fetcher = async <T,>(url: string): Promise<T> => {
+      urls.push(url);
+      if (!url.includes('kraken')) throw new Error('HTTP 451');
+      const since = Number(new URL(url).searchParams.get('since')) * 1000;
+      const rows = Array.from({ length: 12 }, (_, i) => {
+        const t = (since + i * minute) / 1000;
+        return [t, '1', '2', '0.5', String(t), '1', '0.1', 1];
+      }).filter((r) => Number(r[0]) * 1000 + minute <= NOW);
+      return { error: [], result: { XXBTZUSD: rows, last: (NOW - minute) / 1000 } } as T;
+    };
+    const series = await fetchCandleHistory(from, fetcher, ['binance', 'kraken'], NOW);
+    expect(series.source).toBe('kraken');
+    expect(urls.filter((u) => u.includes('kraken'))).toHaveLength(3); // 12 + 12 + 6 minutes
+    expect(series.candles).toHaveLength(30);
+    expect(series.candles[0].ts).toBe(from);
+    expect(series.candles[29].ts).toBe(NOW - minute);
+    expect(new Set(series.candles.map((c) => c.ts)).size).toBe(30);
+    expect(series.candles.every((c) => c.takerBuyVolume === null)).toBe(true);
   });
 
   it('a venue that answers with too few candles is treated as a failure, not as data', async () => {

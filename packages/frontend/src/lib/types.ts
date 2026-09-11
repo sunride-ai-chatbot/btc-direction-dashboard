@@ -80,6 +80,23 @@ export interface CvdSnapshot {
   candles: number;
 }
 
+export interface Candle1m {
+  ts: number;
+  open: number;
+  high: number;
+  low: number;
+  close: number;
+  volume: number;
+  /** null when the source could not tell the taker side apart (REST backfill). */
+  takerBuyVolume: number | null;
+}
+
+export interface CandlesPayload {
+  candles: Candle1m[];
+  cvd: CvdSnapshot;
+  serverTime: number;
+}
+
 export interface StreamTick {
   type: 'tick';
   price: number | null;

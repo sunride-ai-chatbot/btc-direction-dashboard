@@ -36,6 +36,8 @@ export default {
           'sans-serif',
         ],
         mono: ['"IBM Plex Mono"', 'ui-monospace', 'SFMono-Regular', 'Menlo', 'monospace'],
+        // Display face for the brand, headings and hero numbers — the visible identity shift.
+        display: ['"Space Grotesk"', '"IBM Plex Sans"', 'system-ui', 'sans-serif'],
       },
       boxShadow: {
         card: '0 1px 2px rgba(0,0,0,.35), 0 1px 1px rgba(0,0,0,.25)',

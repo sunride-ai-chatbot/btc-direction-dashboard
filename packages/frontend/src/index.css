@@ -29,6 +29,61 @@ body {
   background-image: linear-gradient(90deg, theme('colors.card') 25%, theme('colors.card-hover') 50%, theme('colors.card') 75%);
 }
 
+/* Frosted-glass panel: translucent surface + blur so the aurora/grid ground shows through. */
+.glass {
+  background: rgba(18, 24, 38, 0.66);
+  border: 1px solid rgba(148, 163, 184, 0.14);
+  backdrop-filter: blur(14px) saturate(120%);
+  -webkit-backdrop-filter: blur(14px) saturate(120%);
+}
+
+/* Slow-drifting aurora blobs behind everything. The second blob takes the market's
+   tone (data-tone="bull" | "bear") so the whole page breathes with the last move. */
+.aurora {
+  position: fixed;
+  inset: 0;
+  z-index: 0;
+  overflow: hidden;
+  pointer-events: none;
+}
+.aurora::before,
+.aurora::after {
+  content: '';
+  position: absolute;
+  width: 70vmax;
+  height: 70vmax;
+  border-radius: 50%;
+  filter: blur(90px);
+  opacity: 0.32;
+  transition: background 2s ease;
+}
+.aurora::before {
+  top: -32vmax;
+  left: -22vmax;
+  background: radial-gradient(circle, rgba(59, 130, 246, 0.5), transparent 62%);
+  animation: aurora-a 30s ease-in-out infinite alternate;
+}
+.aurora::after {
+  bottom: -36vmax;
+  right: -26vmax;
+  background: radial-gradient(circle, rgba(148, 163, 184, 0.28), transparent 62%);
+  animation: aurora-b 36s ease-in-out infinite alternate;
+}
+.aurora[data-tone='bull']::after {
+  background: radial-gradient(circle, rgba(57, 255, 20, 0.28), transparent 62%);
+}
+.aurora[data-tone='bear']::after {
+  background: radial-gradient(circle, rgba(255, 23, 68, 0.3), transparent 62%);
+}
+@keyframes aurora-a {
+  from { transform: translate(0, 0); }
+  to { transform: translate(14vmax, 10vmax); }
+}
+@keyframes aurora-b {
+  from { transform: translate(0, 0); }
+  to { transform: translate(-12vmax, -12vmax); }
+}
+
 /* Faint HUD grid + top spotlight behind the whole app — fixed, non-interactive, sits
    under all content (z-0) so it never competes for attention or clicks. */
 .hud-grid {

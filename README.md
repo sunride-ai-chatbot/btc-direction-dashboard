@@ -47,6 +47,7 @@ No API keys are required. Optional overrides (all have sane defaults):
 | `POLYMARKET_GAMMA_URL` | gamma-api.polymarket.com | Polymarket API base |
 | `BINANCE_API_URL` / `KRAKEN_API_URL` / `COINBASE_API_URL` | official bases | spot candle sources |
 | `CANDLE_SOURCES` | `binance,kraken,coinbase` | candle venues tried in order (Binance is geo-blocked from some hosts) |
+| `CANDLE_HISTORY_HOURS` | `72` | one-time boot backfill of 1-minute history for the live chart |
 | `DERIVATIVES` / `REFRESH_DERIVATIVES_MS` | `on` / `120000` | funding / OI / liquidation tracking (zero model weight) |
 
 ## Data sources

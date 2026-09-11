@@ -287,6 +287,12 @@ export class SignalDatabase {
     }
   }
 
+  /** Oldest stored candle timestamp — how much chart context already exists. */
+  getOldestCandleTs(): number | null {
+    const row = this.db.prepare('SELECT MIN(ts) AS min_ts FROM btc_candles_1m').get() as { min_ts: number | null } | undefined;
+    return row?.min_ts ?? null;
+  }
+
   /** Newest N candles in chronological order. */
   getRecentCandles(n: number): Candle1m[] {
     const rows = this.db

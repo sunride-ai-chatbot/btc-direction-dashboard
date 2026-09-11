@@ -12,7 +12,7 @@ describe('translation dictionary coverage', () => {
   it('no Hebrew value is empty or identical to English (except proper names/tickers)', () => {
     const allowedSame = new Set([
       'nav.polymarket', 'comp.polymarket', 'health.provider.polymarket', 'pm.csv', 'eval.n',
-      'news.category.defi', 'live.exchanges',
+      'news.category.defi',
       // numbers-only templates render identically in both languages
       'conformal.line50', 'rel.bandSigma',
     ]);

@@ -313,3 +313,35 @@ Key judgment calls made while building the MVP, so they can be revisited deliber
 63. **Liquidations only where the venue timestamps them**: OKX's `liquidation-orders` carries a
     per-order `ts`, so a 1-hour window is honest (USD = contracts × 0.01 BTC × bankruptcy price).
     BitMEX's `/liquidation` rows have no timestamp and are therefore not used at all.
+64. **Deep candle history is paged once at boot** (`fetchCandleHistory`, `CANDLE_HISTORY_HOURS`
+    = 72): Kraken returns ≤720 rows per call from `since`, Binance ≤1000 from `startTime`,
+    Coinbase ≤300 from `start/end`, so history is walked oldest → newest and de-duplicated. It
+    runs off the critical path (after the first signal) and can never overwrite a candle that
+    already carries a taker split. Without it a fresh deploy's chart would show only the
+    minutes accrued since boot.
+
+## Front end (v3 — terminal shell)
+
+65. **The live chart is TradingView's `lightweight-charts` (v5)**, not Recharts: canvas
+    rendering, crosshair, panes, time-scale scrolling — the one thing a trading UI cannot fake
+    with an SVG line. It is code-split (`LiveChart` chunk) so pages without it stay light.
+    Candles are aggregated client-side from the 1-minute series (1m / 5m / 15m / 30m by
+    horizon); the last bar is rebuilt live from SSE ticks between refreshes.
+66. **The conformal interval is drawn as a √t cone from "now" to the horizon**: the interval is
+    calibrated for the horizon endpoint, so the band width scales with √(t/H) (diffusion) and
+    the center (a + β·score) linearly (drift) — a flat tube would overstate near-term
+    uncertainty and understate the far end. Drawn as five stacked area series (two tints, two
+    background masks) so the 80% and 50% bands nest without a custom renderer; the chart has an
+    opaque background for that reason. Gated horizons draw it in neutral gray.
+67. **Volume bars are colored by taker buy share, not by candle direction** — that is the
+    order-flow story the pooled trade streams make possible (green ≥55%, red ≤45%, gray
+    otherwise, faint gray when the minute has no split). EMA overlays use a palette validated
+    by the dataviz checker for CVD separation on the dark surface (`#0284c7/#b45309/#7c3aed`),
+    deliberately distinct from the reserved bull/bear colors.
+68. **One SSE connection per page** (`LiveProvider`): the ticker bar, chart, order-flow panel and
+    signal HUD all read the same stream. The ticker lists only exchanges that are actually
+    delivering a fresh price, so a geo-blocked venue simply does not appear.
+69. **"Model confidence" is explained in-product** (info tooltip on the HUD): it is the model's
+    self-agreement/data-quality score (30 + strength + component agreement − missing/stale
+    sources, scaled by session quality), explicitly not P(up) — the Evaluation page exists to
+    test whether it tracks accuracy.

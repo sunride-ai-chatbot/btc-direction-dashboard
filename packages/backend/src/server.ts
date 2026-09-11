@@ -11,7 +11,7 @@ import { FredMacroProvider } from './providers/macro.js';
 import { CmcNewsProvider, type CmcNewsSnapshot } from './providers/cmcNews.js';
 import { DerivativesProvider, buildDerivativesSeries, type DerivativesSnapshot } from './providers/derivatives.js';
 import { PriceStream, EXCHANGES } from './providers/priceStream.js';
-import { fetchCandles } from './providers/candles.js';
+import { fetchCandles, fetchCandleHistory } from './providers/candles.js';
 import { runPipeline, type PipelineProviders } from './scoring/pipeline.js';
 import { runEvaluationPass } from './scoring/evaluator.js';
 import { buildAttributionReport, buildDivergenceReport, buildEvaluationReport, buildReliabilityReport } from './scoring/reports.js';
@@ -90,6 +90,20 @@ async function backfillCandles(): Promise<void> {
     console.log(`[stream] backfilled ${candles.length} 1m candles from ${source}`);
   } catch (err) {
     console.error('[stream] candle backfill failed:', err instanceof Error ? err.message : err);
+  }
+}
+
+/** One-time deep history so the chart has days of context right after a deploy, not just what accrues afterwards. */
+async function backfillCandleHistory(): Promise<void> {
+  const target = Date.now() - STREAM_CONFIG.candleHistoryHours * 3_600_000;
+  const oldest = db.getOldestCandleTs();
+  if (oldest !== null && oldest <= target + 3_600_000) return;
+  try {
+    const { candles, source } = await fetchCandleHistory(target);
+    db.upsertCandles(candles); // split-carrying rows are never overwritten (see upsertCandle)
+    console.log(`[stream] deep-backfilled ${candles.length} 1m candles (${(STREAM_CONFIG.candleHistoryHours)}h) from ${source}`);
+  } catch (err) {
+    console.error('[stream] deep candle backfill failed:', err instanceof Error ? err.message : err);
   }
 }
 
@@ -369,9 +383,10 @@ app.get('/api/evaluation', async () => buildEvaluationReport(db));
 app.get('/api/attribution', async () => buildAttributionReport(db));
 app.get('/api/divergences', async () => buildDivergenceReport(db));
 app.get('/api/reliability', async () => reliabilityReport());
+/** Closed 1-minute candles from the DB (up to 72h) — the chart's history; live ticks come over SSE. */
 app.get<{ Querystring: { n?: string } }>('/api/candles', async (req) => {
-  const n = Math.min(Number.parseInt(req.query.n ?? '120', 10) || 120, 600);
-  return { candles: stream.recentCandles(n), cvd: stream.cvd() };
+  const n = Math.min(Number.parseInt(req.query.n ?? '120', 10) || 120, 4320);
+  return { candles: db.getRecentCandles(n), cvd: stream.cvd(), serverTime: Date.now() };
 });
 
 app.get('/api/news', async (_req, reply) => {
@@ -545,6 +560,8 @@ async function main(): Promise<void> {
     // then give the sockets a moment so the first signal can use the consensus price.
     await backfillCandles();
     stream.start();
+    // Deep history is not on the critical path for the first signal — run it in the background.
+    void backfillCandleHistory();
     await new Promise<void>((resolve) => {
       const timer = setTimeout(resolve, 3_000);
       const off = stream.onUpdate(() => {

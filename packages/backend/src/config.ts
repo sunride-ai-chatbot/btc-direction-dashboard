@@ -159,6 +159,8 @@ export const STREAM_CONFIG = {
   anomalyPct: 0.5,
   ssePushIntervalMs: 500,
   candleBackfillLimit: 300,
+  /** How far back the one-time boot backfill pages 1-minute history (the chart's context). */
+  candleHistoryHours: envInt('CANDLE_HISTORY_HOURS', 72),
   reconnectBaseMs: 2_000,
   reconnectMaxMs: 60_000,
   /**

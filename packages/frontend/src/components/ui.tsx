@@ -46,6 +46,37 @@ export function Badge({ tone, children, className = '' }: { tone: Tone; children
   );
 }
 
+/** Tiny live trend line of the last few dozen ticks — decorative reinforcement of a price
+ * shown as text elsewhere, so it's hidden from screen readers. */
+export function LiveSparkline({ points, tone, className = 'h-10 w-32' }: { points: number[]; tone: 'bull' | 'bear'; className?: string }) {
+  if (points.length < 2) return null;
+  const w = 160;
+  const h = 40;
+  const min = Math.min(...points);
+  const max = Math.max(...points);
+  const span = max - min || 1;
+  const coords = points.map((v, i) => [(i / (points.length - 1)) * w, h - ((v - min) / span) * (h - 6) - 3] as const);
+  const line = coords.map(([x, y]) => `${x.toFixed(1)},${y.toFixed(1)}`).join(' ');
+  const [lastX, lastY] = coords[coords.length - 1];
+  const stroke = tone === 'bull' ? '#39ff14' : '#ff1744';
+  const gradId = `spark-${tone}`;
+  return (
+    <div className={`chart-ltr ${className}`} aria-hidden="true">
+      <svg viewBox={`0 0 ${w} ${h}`} className="h-full w-full overflow-visible" preserveAspectRatio="none">
+        <defs>
+          <linearGradient id={gradId} x1="0" y1="0" x2="0" y2="1">
+            <stop offset="0%" stopColor={stroke} stopOpacity="0.3" />
+            <stop offset="100%" stopColor={stroke} stopOpacity="0" />
+          </linearGradient>
+        </defs>
+        <polygon points={`0,${h} ${line} ${w},${h}`} fill={`url(#${gradId})`} />
+        <polyline points={line} fill="none" stroke={stroke} strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" style={{ filter: `drop-shadow(0 0 3px ${stroke})` }} />
+        <circle cx={lastX} cy={lastY} r="2.5" fill={stroke} style={{ filter: `drop-shadow(0 0 4px ${stroke})` }} />
+      </svg>
+    </div>
+  );
+}
+
 /** Shimmering placeholder block for loading states — respects prefers-reduced-motion globally. */
 export function Skeleton({ className = 'h-4 w-full' }: { className?: string }) {
   return <div className={`skeleton ${className}`} aria-hidden="true" />;

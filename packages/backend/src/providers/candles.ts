@@ -72,26 +72,35 @@ export function parseCoinbaseCandles(rows: unknown, intervalMs: number, now: num
   return closedOnly(out, intervalMs, now);
 }
 
-type SourceFetcher = (interval: CandleInterval, limit: number, fetcher: JsonFetcher, now: number) => Promise<Candle1m[]>;
+/** `since` (epoch ms) asks the venue for candles from that time forward — the paging cursor for deep history. */
+type SourceFetcher = (interval: CandleInterval, limit: number, fetcher: JsonFetcher, now: number, since?: number) => Promise<Candle1m[]>;
 
 // Each source gets one fast attempt (no library retries): a geo-block or outage should fail
 // over to the next venue in seconds, not after several retry backoffs.
 const REQUEST = { retries: 0, timeoutMs: 8_000 } as const;
 
+/** Rows a single request can return per venue — the page size when walking history. */
+const PAGE_ROWS: Record<CandleSource, number> = { binance: 1000, kraken: 720, coinbase: 300 };
+
 const SOURCES: Record<CandleSource, SourceFetcher> = {
-  binance: async (interval, limit, fetcher, now) => {
+  binance: async (interval, limit, fetcher, now, since) => {
     const rows = await fetcher<unknown>(
-      `${EXCHANGE_API.binance}/api/v3/klines?symbol=BTCUSDT&interval=${interval}&limit=${Math.min(limit + 1, 1000)}`,
+      `${EXCHANGE_API.binance}/api/v3/klines?symbol=BTCUSDT&interval=${interval}&limit=${Math.min(limit + 1, 1000)}${since !== undefined ? `&startTime=${since}` : ''}`,
       REQUEST,
     );
     return parseBinanceKlines(rows, INTERVAL_MS[interval], now).slice(-limit);
   },
-  kraken: async (interval, limit, fetcher, now) => {
-    const rows = await fetcher<unknown>(`${EXCHANGE_API.kraken}/0/public/OHLC?pair=XBTUSD&interval=${interval === '1m' ? 1 : 60}`, REQUEST);
+  kraken: async (interval, limit, fetcher, now, since) => {
+    const rows = await fetcher<unknown>(
+      `${EXCHANGE_API.kraken}/0/public/OHLC?pair=XBTUSD&interval=${interval === '1m' ? 1 : 60}${since !== undefined ? `&since=${Math.floor(since / 1000)}` : ''}`,
+      REQUEST,
+    );
     return parseKrakenOhlc(rows, INTERVAL_MS[interval], now).slice(-limit);
   },
-  coinbase: async (interval, limit, fetcher, now) => {
-    const rows = await fetcher<unknown>(`${EXCHANGE_API.coinbase}/products/BTC-USD/candles?granularity=${interval === '1m' ? 60 : 3600}`, {
+  coinbase: async (interval, limit, fetcher, now, since) => {
+    const step = INTERVAL_MS[interval];
+    const range = since !== undefined ? `&start=${new Date(since).toISOString()}&end=${new Date(Math.min(now, since + PAGE_ROWS.coinbase * step)).toISOString()}` : '';
+    const rows = await fetcher<unknown>(`${EXCHANGE_API.coinbase}/products/BTC-USD/candles?granularity=${interval === '1m' ? 60 : 3600}${range}`, {
       ...REQUEST,
       headers: { 'user-agent': 'BTCDirectionDashboard/1.0' },
     });
@@ -121,4 +130,39 @@ export async function fetchCandles(
     }
   }
   throw new Error(`no candle source reachable — ${failures.join('; ')}`);
+}
+
+/**
+ * Walks 1-minute history from `fromTs` up to now, page by page (oldest → newest), from
+ * the first venue that answers. Used once at boot so the chart has days of context
+ * immediately instead of only what accumulates after a deploy. Pages are de-duplicated
+ * by timestamp; the caller's merge rule decides what may overwrite what.
+ */
+export async function fetchCandleHistory(
+  fromTs: number,
+  fetcher: JsonFetcher = fetchJson,
+  sources: CandleSource[] = CANDLE_SOURCES,
+  now = Date.now(),
+  maxPages = 12,
+): Promise<CandleSeries> {
+  const failures: string[] = [];
+  for (const source of sources) {
+    try {
+      const byTs = new Map<number, Candle1m>();
+      let cursor = fromTs;
+      for (let page = 0; page < maxPages && cursor < now - 60_000; page++) {
+        const rows = await SOURCES[source]('1m', PAGE_ROWS[source], fetcher, now, cursor);
+        if (rows.length === 0) break;
+        for (const c of rows) byTs.set(c.ts, c);
+        const last = rows[rows.length - 1].ts;
+        if (last + 60_000 <= cursor) break; // venue returned nothing newer — stop rather than spin
+        cursor = last + 60_000;
+      }
+      if (byTs.size === 0) throw new Error('no history returned');
+      return { candles: [...byTs.values()].sort((a, b) => a.ts - b.ts), source };
+    } catch (err) {
+      failures.push(`${source}: ${err instanceof Error ? err.message : String(err)}`);
+    }
+  }
+  throw new Error(`no candle source could page history — ${failures.join('; ')}`);
 }
