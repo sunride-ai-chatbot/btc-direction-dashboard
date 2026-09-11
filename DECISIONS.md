@@ -314,11 +314,13 @@ Key judgment calls made while building the MVP, so they can be revisited deliber
     per-order `ts`, so a 1-hour window is honest (USD = contracts × 0.01 BTC × bankruptcy price).
     BitMEX's `/liquidation` rows have no timestamp and are therefore not used at all.
 64. **Deep candle history is paged once at boot** (`fetchCandleHistory`, `CANDLE_HISTORY_HOURS`
-    = 72): Kraken returns ≤720 rows per call from `since`, Binance ≤1000 from `startTime`,
-    Coinbase ≤300 from `start/end`, so history is walked oldest → newest and de-duplicated. It
-    runs off the critical path (after the first signal) and can never overwrite a candle that
-    already carries a taker split. Without it a fresh deploy's chart would show only the
-    minutes accrued since boot.
+    = 72) from venues that genuinely page: Binance ≤1000 rows from `startTime`, Coinbase ≤300
+    from `start/end`, walked oldest → newest and de-duplicated. **Kraken is excluded from
+    paging**: its OHLC endpoint returns the newest 720 rows whatever `since` says (12h at 1m) —
+    the first production run proved it by stopping at 720 candles — so in production (Binance
+    geo-blocked) the deep history comes from Coinbase. It runs off the critical path (after the
+    first signal) and can never overwrite a candle that already carries a taker split. Without
+    it a fresh deploy's chart would show only the minutes accrued since boot.
 
 ## Front end (v3 — terminal shell)
 

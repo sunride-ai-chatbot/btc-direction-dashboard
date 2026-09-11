@@ -82,6 +82,13 @@ const REQUEST = { retries: 0, timeoutMs: 8_000 } as const;
 /** Rows a single request can return per venue — the page size when walking history. */
 const PAGE_ROWS: Record<CandleSource, number> = { binance: 1000, kraken: 720, coinbase: 300 };
 
+/**
+ * Venues whose `since`-style parameter genuinely walks history. Kraken's OHLC endpoint
+ * serves a fixed window of the newest 720 rows whatever `since` says (12h at 1m) — fine
+ * for the recent backfill, useless for paging — so it is excluded here.
+ */
+const CAN_PAGE: Record<CandleSource, boolean> = { binance: true, kraken: false, coinbase: true };
+
 const SOURCES: Record<CandleSource, SourceFetcher> = {
   binance: async (interval, limit, fetcher, now, since) => {
     const rows = await fetcher<unknown>(
@@ -143,10 +150,10 @@ export async function fetchCandleHistory(
   fetcher: JsonFetcher = fetchJson,
   sources: CandleSource[] = CANDLE_SOURCES,
   now = Date.now(),
-  maxPages = 12,
+  maxPages = 20,
 ): Promise<CandleSeries> {
   const failures: string[] = [];
-  for (const source of sources) {
+  for (const source of sources.filter((s) => CAN_PAGE[s])) {
     try {
       const byTs = new Map<number, Candle1m>();
       let cursor = fromTs;

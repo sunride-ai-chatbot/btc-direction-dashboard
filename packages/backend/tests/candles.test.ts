@@ -74,28 +74,31 @@ describe('fetchCandles fallback chain', () => {
     expect(series.candles[49].close).toBe(70049);
   });
 
-  it('pages deep 1-minute history oldest → newest through `since`, de-duplicating overlapping pages', async () => {
+  it('pages deep 1-minute history oldest → newest through Coinbase start/end, skipping Kraken (which cannot page) and a blocked Binance', async () => {
     const minute = 60_000;
-    const from = NOW - 30 * minute; // ask for 30 minutes; the venue serves 12 rows per page
+    const from = NOW - 30 * minute; // ask for 30 minutes; Coinbase returns newest-first pages of 300 max — here the window is 300 minutes wide
     const urls: string[] = [];
     const fetcher = async <T,>(url: string): Promise<T> => {
       urls.push(url);
-      if (!url.includes('kraken')) throw new Error('HTTP 451');
-      const since = Number(new URL(url).searchParams.get('since')) * 1000;
-      const rows = Array.from({ length: 12 }, (_, i) => {
-        const t = (since + i * minute) / 1000;
-        return [t, '1', '2', '0.5', String(t), '1', '0.1', 1];
-      }).filter((r) => Number(r[0]) * 1000 + minute <= NOW);
-      return { error: [], result: { XXBTZUSD: rows, last: (NOW - minute) / 1000 } } as T;
+      if (url.includes('binance')) throw new Error('HTTP 451');
+      if (url.includes('kraken')) throw new Error('kraken must not be asked to page history');
+      const u = new URL(url);
+      const start = Date.parse(u.searchParams.get('start')!);
+      const end = Date.parse(u.searchParams.get('end')!);
+      // Newest-first, like the real endpoint, and only closed minutes.
+      const rows: number[][] = [];
+      for (let t = start; t < end && t + minute <= NOW; t += minute) rows.unshift([t / 1000, 1, 2, 1.5, t / 1000, 0.1]);
+      return rows as T;
     };
-    const series = await fetchCandleHistory(from, fetcher, ['binance', 'kraken'], NOW);
-    expect(series.source).toBe('kraken');
-    expect(urls.filter((u) => u.includes('kraken'))).toHaveLength(3); // 12 + 12 + 6 minutes
+    const series = await fetchCandleHistory(from, fetcher, ['binance', 'kraken', 'coinbase'], NOW);
+    expect(series.source).toBe('coinbase');
+    expect(urls.some((u) => u.includes('kraken'))).toBe(false);
     expect(series.candles).toHaveLength(30);
     expect(series.candles[0].ts).toBe(from);
     expect(series.candles[29].ts).toBe(NOW - minute);
     expect(new Set(series.candles.map((c) => c.ts)).size).toBe(30);
     expect(series.candles.every((c) => c.takerBuyVolume === null)).toBe(true);
+    expect(series.candles[0].open).toBe(1.5); // Coinbase column order respected while paging too
   });
 
   it('a venue that answers with too few candles is treated as a failure, not as data', async () => {
