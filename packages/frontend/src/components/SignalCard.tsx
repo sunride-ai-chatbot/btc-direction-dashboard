@@ -30,6 +30,7 @@ export function SignalCard({ signal }: { signal: HorizonSignal }) {
   const windowLabel = (w: string) => (lang === 'he' ? w.replace(/^(\d+)d$/, '$1 ימים') : w);
   const conf = signal.conformal;
   const sim = signal.similarStates;
+  const shadow = signal.horizon === '1h' ? signal.context?.hourlyShadow : null;
 
   return (
     <section className={`glass animate-fade-in-up rounded-2xl ring-1 ${style.ring} flex flex-col p-5 text-center`}>
@@ -101,6 +102,20 @@ export function SignalCard({ signal }: { signal: HorizonSignal }) {
         <span className="mx-auto mt-3 inline-block rounded-full border border-flat/40 bg-flat/10 px-3 py-1 text-xs font-semibold text-flat" title={signal.historyNote ? translateDynamic(signal.historyNote, lang) : undefined}>
           {t('signal.limitedHistory')}
         </span>
+      )}
+
+      {shadow && (
+        <div className="mt-3 rounded-xl border border-accent/30 bg-accent/5 p-3 text-start text-xs">
+          <div className="flex items-center justify-between gap-3">
+            <div>
+              <div className="text-[10px] font-semibold uppercase tracking-widest text-accent">{t('shadow.title')}</div>
+              <div className="mt-1 text-slate-400">{t('shadow.explainer')}</div>
+            </div>
+            <div className={`font-mono text-xl font-bold tabular-nums ${shadow.score > 5 ? 'text-bull' : shadow.score < -5 ? 'text-bear' : 'text-flat'}`}>
+              {shadow.score > 0 ? '+' : ''}{shadow.score}
+            </div>
+          </div>
+        </div>
       )}
 
       <div className="mt-4 rounded-xl border border-border/60 bg-surface/50 p-3 text-start text-xs text-slate-300">

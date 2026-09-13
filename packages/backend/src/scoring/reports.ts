@@ -190,6 +190,7 @@ export interface HorizonReliability {
   scoreDistribution: { p50Abs: number | null; p90Abs: number | null; maxAbs: number | null; directionalCallPct: number | null; flatRatePct: number | null; n: number };
   band: { currentPct: number; method: string; sigmaPct: number | null; fixedPct: number; adaptiveRowsPct: number | null };
   conformal: { available: boolean; nCalibration: number; coverage80: number | null; coverageN: number; halfWidth80AtZero: number | null; baselineHalfWidth80: number | null; beta: number | null };
+  shadow1h: { available: boolean; n: number; primaryAgreement: number | null; shadowAgreement: number | null; deltaPctPoints: number | null } | null;
 }
 
 export interface ReliabilityReport {
@@ -224,6 +225,30 @@ export function buildReliabilityReport(db: SignalDatabase, now = Date.now()): Re
     const directional = hz.filter((r) => Math.abs(r.final_score) >= 25).length;
     const flat = hz.filter((r) => r.actual_direction === 'flat').length;
     const adaptiveRows = hz.filter((r) => r.band_method === 'vol-adaptive-v2').length;
+
+    let shadow1h: HorizonReliability['shadow1h'] = null;
+    if (h === '1h') {
+      const paired = db.getEvaluations('1h').flatMap((row) => {
+        if (row.actual_direction === 'flat') return [];
+        try {
+          const c = JSON.parse(row.components_json) as { hourlyShadow?: number };
+          return typeof c.hourlyShadow === 'number' && Math.abs(c.hourlyShadow) >= 5 ? [{ ...row, shadow: c.hourlyShadow }] : [];
+        } catch { return []; }
+      });
+      const independent = thinToNonOverlapping(paired, HORIZON_MINUTES['1h']);
+      const primaryHits = independent.filter((r) => Math.abs(r.final_score) >= 5 && Math.sign(r.final_score) === (r.actual_direction === 'up' ? 1 : -1)).length;
+      const primaryN = independent.filter((r) => Math.abs(r.final_score) >= 5).length;
+      const shadowHits = independent.filter((r) => Math.sign(r.shadow) === (r.actual_direction === 'up' ? 1 : -1)).length;
+      const primaryAgreement = primaryN ? primaryHits / primaryN : null;
+      const shadowAgreement = independent.length ? shadowHits / independent.length : null;
+      shadow1h = {
+        available: independent.length > 0,
+        n: independent.length,
+        primaryAgreement: primaryAgreement === null ? null : +primaryAgreement.toFixed(4),
+        shadowAgreement: shadowAgreement === null ? null : +shadowAgreement.toFixed(4),
+        deltaPctPoints: primaryAgreement === null || shadowAgreement === null ? null : +((shadowAgreement - primaryAgreement) * 100).toFixed(1),
+      };
+    }
 
     // Full-data interval is what every live signal actually gets served.
     const interval = fitConformal(rows, h);
@@ -270,6 +295,7 @@ export function buildReliabilityReport(db: SignalDatabase, now = Date.now()): Re
         baselineHalfWidth80: atZero?.baselineHalfWidth80 ?? null,
         beta: atZero?.beta ?? null,
       },
+      shadow1h,
     };
   });
 

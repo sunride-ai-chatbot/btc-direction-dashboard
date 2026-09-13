@@ -108,6 +108,10 @@ A dead provider degrades confidence and is labeled in the UI; it never crashes t
    CUSUM drift alarm.
 10. **Conformal ranges**: split-conformal 80%/50% intervals for the horizon move are attached to
     each signal, plus the empirical up-rate of similar past score states (with n).
+11. **1h shadow model**: an experimental microstructure score combines 15m/1h CVD, 1h price
+    momentum and BTC-direct Polymarket movement. It excludes slow ETF/macro inputs, dampens
+    conflicting flow and range/high-vol regimes, and is persisted/evaluated separately. It never
+    changes the production label until an out-of-sample, non-overlapping comparison proves it is better.
 
 Explanations are deterministic templates filled from actual collected data — no LLM is used or
 required, and the numeric engine alone decides direction.

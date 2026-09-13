@@ -71,6 +71,16 @@ export interface HorizonSignal {
   conformal: ConformalInterval | null;
   similarStates: SimilarStates | null;
   regime: MarketRegime;
+  context?: {
+    hourlyShadow?: {
+      version: string;
+      score: number;
+      inputs: Record<string, number>;
+      appliedWeights: Record<string, number>;
+      regimeMultiplier: number;
+      disagreementPenalty: number;
+    } | null;
+  };
 }
 
 export interface CvdSnapshot {
@@ -126,6 +136,7 @@ export interface HorizonReliability {
   scoreDistribution: { p50Abs: number | null; p90Abs: number | null; maxAbs: number | null; directionalCallPct: number | null; flatRatePct: number | null; n: number };
   band: { currentPct: number; method: string; sigmaPct: number | null; fixedPct: number; adaptiveRowsPct: number | null };
   conformal: { available: boolean; nCalibration: number; coverage80: number | null; coverageN: number; halfWidth80AtZero: number | null; baselineHalfWidth80: number | null; beta: number | null };
+  shadow1h: { available: boolean; n: number; primaryAgreement: number | null; shadowAgreement: number | null; deltaPctPoints: number | null } | null;
 }
 
 export interface ReliabilityReport {

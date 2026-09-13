@@ -1,6 +1,7 @@
 import { HORIZON_WEIGHTS, SIGNAL_THRESHOLDS, HYSTERESIS_CONFIG, EDGE_GATE_CONFIG } from '../config.js';
 import { clamp } from '../utils/indicators.js';
 import { classifyRegime } from './edge.js';
+import { buildHourlyShadow } from './shadow.js';
 import type {
   ComponentScore, ConformalInterval, EdgeStats, Horizon, HorizonSignal, LiquidityContext,
   SignalContext, SignalLabel, SimilarStates,
@@ -154,6 +155,7 @@ export function buildSignal(
   const conformal = enrich.conformal ? enrich.conformal(finalScore) : null;
   const similar = enrich.similar ? enrich.similar(finalScore) : null;
   const regime = classifyRegime(components.technical.details as Record<string, unknown>);
+  const hourlyShadow = horizon === '1h' ? buildHourlyShadow(components.technical, components.polymarket, regime) : null;
 
   const polyDetails = components.polymarket.details as {
     limitedHistory?: boolean;
@@ -186,6 +188,7 @@ export function buildSignal(
     conformal,
     priceAnomaly: enrich.priceAnomaly ?? null,
     livePrice: enrich.livePrice ?? null,
+    hourlyShadow,
   };
 
   const weights = HORIZON_WEIGHTS[horizon];

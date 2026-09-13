@@ -241,6 +241,8 @@ export interface SignalContext {
   conformal?: ConformalInterval | null;
   priceAnomaly?: { anomaly: boolean; note: string | null; spreadPct: number | null } | null;
   livePrice?: { source: 'consensus' | 'rest'; exchanges: number } | null;
+  /** Experimental 1h score, recorded for out-of-sample comparison only. */
+  hourlyShadow?: import('./scoring/shadow.js').HourlyShadowSignal | null;
 }
 
 export interface SignalBundle {

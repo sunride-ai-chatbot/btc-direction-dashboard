@@ -112,6 +112,7 @@ function componentSnapshot(row: SignalRow): { components: Record<string, unknown
   let categoryScores: Record<string, number> = {};
   let unavailableProviders: string[] = [];
   let regime: MarketRegime = 'unknown';
+  let hourlyShadow: number | undefined;
   if (row.context_json) {
     try {
       const ctx = JSON.parse(row.context_json) as {
@@ -119,10 +120,12 @@ function componentSnapshot(row: SignalRow): { components: Record<string, unknown
         unavailableProviders?: string[];
         technicalValues?: Record<string, unknown>;
         regime?: MarketRegime;
+        hourlyShadow?: { score?: number } | null;
       };
       categoryScores = ctx.polymarketCategoryScores ?? {};
       unavailableProviders = ctx.unavailableProviders ?? [];
       regime = ctx.regime ?? classifyRegime(ctx.technicalValues);
+      if (typeof ctx.hourlyShadow?.score === 'number') hourlyShadow = ctx.hourlyShadow.score;
     } catch {
       // legacy rows without parseable context
     }
@@ -137,6 +140,7 @@ function componentSnapshot(row: SignalRow): { components: Record<string, unknown
       liquidity: row.liquidity_score,
       polymarketCategories: categoryScores,
       unavailableProviders,
+      hourlyShadow,
     },
   };
 }

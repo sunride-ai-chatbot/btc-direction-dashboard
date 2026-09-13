@@ -347,3 +347,14 @@ Key judgment calls made while building the MVP, so they can be revisited deliber
     self-agreement/data-quality score (30 + strength + component agreement − missing/stale
     sources, scaled by session quality), explicitly not P(up) — the Evaluation page exists to
     test whether it tracks accuracy.
+
+## Phase 6b — 1h shadow model (2026-09-12)
+
+70. **The first hourly challenger is shadow-only.** `1h-microstructure-v1` uses only inputs whose
+    cadence can plausibly matter inside one hour: 15m/1h pooled-trade CVD, 1h spot momentum, and
+    BTC-direct Polymarket movement. ETF and macro are intentionally excluded. Missing inputs are
+    renormalized away; conflicting 15m vs 1h flow and range/high-vol regimes dampen magnitude.
+71. **No promotion from the local sample.** The local DB has only 30 evaluated 1h signals and is
+    not the current Railway history. The challenger is stored in `context_json`, copied into the
+    evaluation snapshot, and compared on non-flat, non-overlapping 1h outcomes. The primary score,
+    labels, confidence, schema and Railway topology remain unchanged until forward evidence wins.
