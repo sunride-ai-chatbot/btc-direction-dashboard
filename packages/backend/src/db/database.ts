@@ -711,7 +711,7 @@ export class SignalDatabase {
 
   exportSignalRows(): Array<Record<string, unknown>> {
     return this.db
-      .prepare('SELECT id, ts, horizon, btc_price, polymarket_score, technical_score, etf_score, macro_score, liquidity_score, final_score, label, raw_label, confidence FROM signals ORDER BY ts ASC')
+      .prepare('SELECT id, ts, horizon, btc_price, polymarket_score, technical_score, etf_score, macro_score, liquidity_score, final_score, label, raw_label, confidence, scoring_version FROM signals ORDER BY ts ASC')
       .all() as unknown as Array<Record<string, unknown>>;
   }
 
