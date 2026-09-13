@@ -99,6 +99,24 @@ export const SERVER_CONFIG = {
   corsOrigin: process.env.CORS_ORIGIN,
   // One-time DB import guard; endpoint is disabled when unset.
   importToken: process.env.IMPORT_TOKEN,
+  // Guards the backup download endpoint; disabled (404) when unset.
+  backupToken: process.env.BACKUP_TOKEN,
+};
+
+/**
+ * Nightly verified snapshot of the SQLite file. The collected evaluation history cannot be
+ * recreated — a lost volume loses the product. Snapshots live beside the DB (same volume),
+ * which protects against corruption and bad migrations but NOT against volume loss, so the
+ * token-guarded download endpoint exists to pull them off-box.
+ */
+export const BACKUP_CONFIG = {
+  enabled: process.env.BACKUPS !== 'off',
+  /** Directory for snapshots; defaults next to the database so it lands on the volume. */
+  dir: process.env.BACKUP_DIR ?? `${(process.env.DATABASE_PATH ?? process.env.DB_PATH ?? './data/signals.db').replace(/\/[^/]*$/, '')}/backups`,
+  keep: envInt('BACKUP_KEEP', 7),
+  intervalMs: envInt('BACKUP_INTERVAL_MS', 24 * 3_600_000),
+  /** Minutes past midnight UTC for the first run — 03:00, away from the evaluator tick. */
+  firstRunUtcMinute: envInt('BACKUP_UTC_MINUTE', 3 * 60),
 };
 
 /**

@@ -382,3 +382,27 @@ Key judgment calls made while building the MVP, so they can be revisited deliber
     edge. Until a `scoring_version` column exists, split on the deploy timestamp recorded in the
     commit for this change. Other central banks (RBA/ECB/BoE/BoJ) no longer categorize as `fed`,
     and a bare "interest rate" is no longer a Fed keyword.
+
+## Phase 6d — durable data (2026-09-13)
+
+75. **The database is the only irreplaceable asset, so it is backed up before it is migrated.**
+    14,224 signals and 13,017 evaluations represent months of wall-clock time that cannot be
+    regenerated from any API — replaying history is impossible because the inputs (order books,
+    Polymarket prices, ETF flows) are not queryable retroactively. Roadmap #2 adds a schema
+    migration; a migration that goes wrong on an unbacked-up volume is unrecoverable. So #6 ships
+    first: a snapshot at boot and every 24h via `VACUUM INTO` (consistent under concurrent writes,
+    no service pause), kept 7 deep.
+76. **An unverified backup is not a backup.** `backupVerified()` opens each snapshot as its own
+    database, runs `PRAGMA integrity_check`, and asserts every table's row count is at least the
+    live count before the snapshot is accepted; a failure raises a critical alert instead of
+    silently recording success. The regression test corrupts the middle of a finished snapshot and
+    asserts verification rejects it, so the check cannot rot into a no-op.
+77. **A backup must never be the thing that takes the service down.** Railway volumes are fixed
+    size and a full volume stops writes. `runBackup()` checks free space with `statfsSync` and
+    requires 2x the database size before starting, deleting oldest snapshots first to make room,
+    and aborts rather than filling the disk.
+78. **Snapshots are retrievable off-box.** `GET /api/admin/backups` lists and
+    `/api/admin/backups/:name` streams, behind a timing-safe `BACKUP_TOKEN` compare (403 without
+    it, endpoints disabled entirely when unset) and a `/^signals-[\d-]+\.sqlite$/` name guard that
+    rejects traversal. Verified end to end: the downloaded file opens as a standalone database
+    with all 11 tables and passes its own integrity check.

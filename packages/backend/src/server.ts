@@ -1,7 +1,7 @@
 import Fastify from 'fastify';
 import cors from '@fastify/cors';
 import { timingSafeEqual } from 'node:crypto';
-import { writeFileSync, renameSync, rmSync } from 'node:fs';
+import { writeFileSync, renameSync, rmSync, readdirSync, createReadStream, statSync, statfsSync, mkdirSync } from 'node:fs';
 import type { ServerResponse } from 'node:http';
 import { SignalDatabase } from './db/database.js';
 import { GammaPolymarketProvider } from './providers/polymarket.js';
@@ -22,7 +22,7 @@ import { cached } from './utils/cached.js';
 import { HealthRegistry } from './utils/health.js';
 import { toCsv } from './utils/csv.js';
 import {
-  DERIVATIVES_CONFIG, DIVERGENCE_CONFIG, EDGE_GATE_CONFIG, EVALUATION_CONFIG, HORIZON_WEIGHTS, NEUTRAL_THRESHOLD_PCT,
+  BACKUP_CONFIG, DERIVATIVES_CONFIG, DIVERGENCE_CONFIG, EDGE_GATE_CONFIG, EVALUATION_CONFIG, HORIZON_WEIGHTS, NEUTRAL_THRESHOLD_PCT,
   REFRESH_INTERVALS_MS, SERVER_CONFIG, STREAM_CONFIG,
 } from './config.js';
 import { HORIZONS, type ConformalInterval, type EdgeStats, type Horizon, type SignalBundle, type SignalLabel, type PolymarketSnapshot } from './types.js';
@@ -276,6 +276,64 @@ async function refreshDerivatives(): Promise<void> {
   }
 }
 
+interface BackupState {
+  lastOkTs: number | null;
+  lastError: string | null;
+  lastBytes: number | null;
+  lastPath: string | null;
+}
+const backupState: BackupState = { lastOkTs: null, lastError: null, lastBytes: null, lastPath: null };
+
+/** Verified nightly snapshot + retention. Never throws: a failed backup must not kill the scheduler. */
+function runBackup(): void {
+  if (shuttingDown || !BACKUP_CONFIG.enabled) return;
+  const startedAt = Date.now();
+  const stamp = new Date(startedAt).toISOString().slice(0, 19).replace(/[:T]/g, '-');
+  const dest = `${BACKUP_CONFIG.dir}/signals-${stamp}.sqlite`;
+  try {
+    // Backups share the volume with the live database. Filling it would stop every write
+    // the app makes — far worse than a skipped snapshot — so require headroom for two
+    // copies before starting, and drop the oldest snapshots first if that is what it takes.
+    const dbBytes = statSync(SERVER_CONFIG.dbPath).size;
+    const free = () => {
+      const fs = statfsSync(BACKUP_CONFIG.dir);
+      return fs.bavail * fs.bsize;
+    };
+    mkdirSync(BACKUP_CONFIG.dir, { recursive: true });
+    let existing = readdirSync(BACKUP_CONFIG.dir).filter((f) => f.startsWith('signals-') && f.endsWith('.sqlite')).sort();
+    while (free() < dbBytes * 2 && existing.length > 0) {
+      const oldest = existing.shift()!;
+      console.warn(`[backup] low disk — removing older snapshot ${oldest}`);
+      rmSync(`${BACKUP_CONFIG.dir}/${oldest}`, { force: true });
+    }
+    if (free() < dbBytes * 2) {
+      throw new Error(`insufficient disk: ${(free() / 1e6).toFixed(0)}MB free, need ${((dbBytes * 2) / 1e6).toFixed(0)}MB`);
+    }
+    const { bytes, rows } = db.backupVerified(dest);
+    backupState.lastOkTs = Date.now();
+    backupState.lastError = null;
+    backupState.lastBytes = bytes;
+    backupState.lastPath = dest;
+    // Keep only the newest N snapshots; they sit on the same finite volume as the DB.
+    const kept = readdirSync(BACKUP_CONFIG.dir)
+      .filter((f) => f.startsWith('signals-') && f.endsWith('.sqlite'))
+      .sort()
+      .reverse();
+    for (const stale of kept.slice(BACKUP_CONFIG.keep)) {
+      rmSync(`${BACKUP_CONFIG.dir}/${stale}`, { force: true });
+    }
+    console.log(`[backup] ${dest} — ${(bytes / 1e6).toFixed(1)}MB, verified (signals=${rows.signals}, evaluations=${rows.evaluations}) in ${Date.now() - startedAt}ms; keeping ${Math.min(kept.length, BACKUP_CONFIG.keep)}`);
+  } catch (err) {
+    backupState.lastError = err instanceof Error ? err.message : String(err);
+    console.error('[backup] FAILED:', backupState.lastError);
+    rmSync(dest, { force: true }); // never leave an unverified snapshot behind
+    const msg = `Database backup failed: ${backupState.lastError}`;
+    if (!db.hasRecentAlert('backup-failed', msg, Date.now() - 12 * 3_600_000)) {
+      db.insertAlert('backup-failed', msg, 'critical', null, Date.now());
+    }
+  }
+}
+
 function evaluateDueSignals(): void {
   if (shuttingDown) return;
   try {
@@ -323,6 +381,10 @@ app.get('/health', async (_req, reply) => {
     providers: Object.fromEntries(snap.providers.map((p) => [p.name, p.status])),
     stream: { ...stream.status(), sseClients: sseClients.size, candles: stream.recentCandles(600).length },
     edge: edgeCache ? Object.fromEntries(HORIZONS.map((h) => [h, edgeCache!.stats[h].status])) : null,
+    // A backup that quietly stopped running looks identical to one that never existed.
+    backup: BACKUP_CONFIG.enabled
+      ? { lastOkTs: backupState.lastOkTs, ageHours: backupState.lastOkTs ? +((Date.now() - backupState.lastOkTs) / 3_600_000).toFixed(1) : null, lastBytes: backupState.lastBytes, lastError: backupState.lastError }
+      : { disabled: true },
   });
 });
 
@@ -483,6 +545,54 @@ app.get<{ Params: { file: string } }>('/api/export/:file', async (req, reply) =>
 });
 
 /**
+ * Off-box backup retrieval. Snapshots live on the same volume as the database, so they
+ * survive corruption and bad migrations but NOT volume loss — pulling them somewhere else
+ * is what makes them a real backup. Disabled (404) unless BACKUP_TOKEN is set.
+ */
+function checkBackupToken(req: { headers: Record<string, unknown> }): boolean {
+  const token = SERVER_CONFIG.backupToken;
+  if (!token) return false;
+  const supplied = String(req.headers.authorization ?? '').replace(/^Bearer /, '');
+  const a = Buffer.from(supplied);
+  const b = Buffer.from(token);
+  return a.length === b.length && timingSafeEqual(a, b);
+}
+
+app.get('/api/admin/backups', async (req, reply) => {
+  if (!SERVER_CONFIG.backupToken) return reply.code(404).send({ error: 'not found' });
+  if (!checkBackupToken(req)) return reply.code(403).send({ error: 'forbidden' });
+  let files: Array<{ name: string; bytes: number; modified: number }> = [];
+  try {
+    files = readdirSync(BACKUP_CONFIG.dir)
+      .filter((f) => f.startsWith('signals-') && f.endsWith('.sqlite'))
+      .map((name) => {
+        const s = statSync(`${BACKUP_CONFIG.dir}/${name}`);
+        return { name, bytes: s.size, modified: s.mtimeMs };
+      })
+      .sort((x, y) => y.modified - x.modified);
+  } catch {
+    // directory not created yet — no backup has run
+  }
+  return { backups: files, last: backupState, keep: BACKUP_CONFIG.keep };
+});
+
+app.get<{ Params: { name: string } }>('/api/admin/backups/:name', async (req, reply) => {
+  if (!SERVER_CONFIG.backupToken) return reply.code(404).send({ error: 'not found' });
+  if (!checkBackupToken(req)) return reply.code(403).send({ error: 'forbidden' });
+  // Path traversal guard: only our own generated filenames are addressable.
+  if (!/^signals-[\d-]+\.sqlite$/.test(req.params.name)) return reply.code(400).send({ error: 'invalid backup name' });
+  const path = `${BACKUP_CONFIG.dir}/${req.params.name}`;
+  try {
+    statSync(path);
+  } catch {
+    return reply.code(404).send({ error: 'no such backup' });
+  }
+  reply.header('content-type', 'application/octet-stream');
+  reply.header('content-disposition', `attachment; filename="${req.params.name}"`);
+  return reply.send(createReadStream(path));
+});
+
+/**
  * ONE-TIME history import (migrating the local production SQLite into the
  * Railway volume). Active only while IMPORT_TOKEN is set; disabled (404)
  * otherwise. The uploaded file is written next to the target and swapped in
@@ -588,6 +698,21 @@ async function main(): Promise<void> {
   timers.push(setInterval(refreshDerivatives, REFRESH_INTERVALS_MS.derivatives));
   timers.push(setInterval(evaluateDueSignals, EVALUATION_CONFIG.jobIntervalMs));
   timers.push(setInterval(() => db.pruneOldData(30 * 24 * 3_600_000), 6 * 3_600_000));
+  if (BACKUP_CONFIG.enabled) {
+    // One snapshot at boot (so a fresh deploy is immediately protected), then aligned to
+    // BACKUP_UTC_MINUTE — deliberately away from the 5-minute evaluator tick.
+    runBackup();
+    const nowUtc = new Date();
+    const minutesIntoDay = nowUtc.getUTCHours() * 60 + nowUtc.getUTCMinutes();
+    const untilFirst = ((BACKUP_CONFIG.firstRunUtcMinute - minutesIntoDay + 1440) % 1440) * 60_000;
+    timers.push(
+      setTimeout(() => {
+        runBackup();
+        timers.push(setInterval(runBackup, BACKUP_CONFIG.intervalMs));
+      }, untilFirst) as unknown as NodeJS.Timeout,
+    );
+    console.log(`[backup] enabled — dir=${BACKUP_CONFIG.dir} keep=${BACKUP_CONFIG.keep} next=${Math.round(untilFirst / 60_000)}min`);
+  }
   timers.push(
     setInterval(() => {
       const c = db.countsByTable();

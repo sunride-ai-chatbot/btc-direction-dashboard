@@ -1,5 +1,5 @@
 import { DatabaseSync } from 'node:sqlite';
-import { mkdirSync } from 'node:fs';
+import { mkdirSync, rmSync, statSync } from 'node:fs';
 import { dirname } from 'node:path';
 import type { Candle1m, Horizon, HorizonSignal, SignalLabel, StoredEvaluation, DivergenceEvent } from '../types.js';
 import type { CmcNewsItem } from '../providers/cmcNews.js';
@@ -676,6 +676,36 @@ export class SignalDatabase {
   /** Consistent point-in-time snapshot of the whole DB (works under WAL). */
   backupTo(destPath: string): void {
     this.db.prepare('VACUUM INTO ?').run(destPath);
+  }
+
+  /**
+   * Write a snapshot and prove it is restorable before trusting it: a backup that is only
+   * written, never opened, is indistinguishable from no backup at all. Opens the copy as a
+   * separate database, runs SQLite's own integrity check and re-counts every table against
+   * the live numbers. Returns the verified row counts; throws if the snapshot is unusable.
+   */
+  backupVerified(destPath: string): { bytes: number; rows: Record<string, number> } {
+    mkdirSync(dirname(destPath), { recursive: true });
+    rmSync(destPath, { force: true }); // VACUUM INTO refuses to overwrite
+    const live = this.countsByTable();
+    this.backupTo(destPath);
+
+    const copy = new DatabaseSync(destPath, { readOnly: true });
+    try {
+      const integrity = copy.prepare('PRAGMA integrity_check').get() as unknown as { integrity_check: string };
+      if (integrity?.integrity_check !== 'ok') throw new Error(`integrity_check returned "${integrity?.integrity_check}"`);
+      const rows: Record<string, number> = {};
+      for (const [table, expected] of Object.entries(live)) {
+        const got = (copy.prepare(`SELECT COUNT(*) AS c FROM ${table}`).get() as { c: number }).c;
+        // The live DB keeps collecting during VACUUM INTO, so the snapshot may hold a few
+        // MORE rows than the pre-backup count; fewer means data was lost.
+        if (got < expected) throw new Error(`${table}: snapshot has ${got} rows, live had ${expected}`);
+        rows[table] = got;
+      }
+      return { bytes: statSync(destPath).size, rows };
+    } finally {
+      copy.close();
+    }
   }
 
   pruneOldData(olderThanMs: number): void {
