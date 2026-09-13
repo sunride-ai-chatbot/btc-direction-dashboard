@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest';
 import { classify, composeFinalScore, computeConfidence, buildSignal, type ComponentSet } from '../src/scoring/engine.js';
 import { scoreEtf, scoreLiquidity, scorePolymarket, scoreTechnical } from '../src/scoring/scorers.js';
 import { HORIZON_WEIGHTS, SIGNAL_THRESHOLDS } from '../src/config.js';
-import { categorize, bullishDirection, relevance } from '../src/providers/polymarket.js';
+import { categorize, bullishDirection, fedPolicyDirection, relevance } from '../src/providers/polymarket.js';
 import { getLiquidityContext, sessionFor } from '../src/providers/liquidity.js';
 import { HORIZONS, type ComponentScore, type LiquidityContext, type PolymarketSnapshot, type BitcoinTechnicals, type EtfFlows } from '../src/types.js';
 
@@ -167,6 +167,47 @@ describe('polymarket relevance + categorization', () => {
 
   it('returns null (excluded) when direction cannot be inferred', () => {
     expect(bullishDirection('Something ambiguous about bitcoin', 'btc-direct')).toBeNull();
+  });
+
+  // Titles below are verbatim from production on 2026-09-13, where the most liquid Fed
+  // market ($1.12M, 79.5%) was scored BULLISH because "incr(ease)" matched a substring
+  // test on /ease/ — inverting the highest-weight component and the derived cut probability.
+  it('REGRESSION: a rate-HIKE market is bearish even when its wording contains "ease"', () => {
+    const hikes = [
+      'Will the Fed increase interest rates by 25 bps after the September 2026 meeting?',
+      'Fed Rate Hike by October 2026 Meeting?',
+      'Fed rate hike in 2026?',
+      'Will the Fed raise rates in December?',
+      'Fed increases rates before July?',
+    ];
+    for (const title of hikes) {
+      expect(fedPolicyDirection(title), title).toBe('hike');
+      expect(bullishDirection(title, 'fed'), title).toBe(-1);
+    }
+  });
+
+  it('keeps genuine easing markets bullish, and reads "no rate cut" as a bet against easing', () => {
+    expect(fedPolicyDirection('Will the Fed cut rates in October?')).toBe('cut');
+    expect(bullishDirection('Will the Fed cut rates in October?', 'fed')).toBe(1);
+    expect(bullishDirection('Fed emergency rate cut in 2026?', 'fed')).toBe(1);
+    expect(fedPolicyDirection('No rate cut in September?')).toBe('hike');
+    expect(bullishDirection('No rate cut in September?', 'fed')).toBe(-1);
+    // Genuinely two-sided wording must stay excluded rather than guessed.
+    expect(fedPolicyDirection('Will the Fed cut or hike in March?')).toBeNull();
+    expect(bullishDirection('Will the Fed cut or hike in March?', 'fed')).toBeNull();
+  });
+
+  it('REGRESSION: whole-word matching — "war" must not fire on "Awards", nor "fed" on other central banks', () => {
+    expect(categorize('Who will win Album of the Year at the Awards?')).toBeNull();
+    expect(categorize('Will Warner Bros be sold in 2026?')).toBeNull();
+    expect(categorize('Will China invade Taiwan by end of 2026?')).toBe('geopolitical');
+    expect(bullishDirection('Will China invade Taiwan by end of 2026?', 'geopolitical')).toBe(-1);
+    // Other central banks must not be mistaken for the Fed.
+    expect(categorize('Will the RBA raise interest rates in November?')).not.toBe('fed');
+    expect(categorize('Will the ECB cut interest rates in Q4?')).not.toBe('fed');
+    // ...while real Fed phrasings still categorize, including possessives and end-of-string.
+    expect(categorize("What will the Fed's decision be?")).toBe('fed');
+    expect(categorize('Emergency rate cut by the Fed?')).toBe('fed');
   });
 });
 

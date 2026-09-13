@@ -129,4 +129,32 @@ describe('scoring pipeline integration', () => {
     const { bundle } = await runPipeline(providers({ etf: false }));
     expect(bundle.signals['24h'].components.etf.available).toBe(false);
   });
+
+  // Production on 2026-09-13 reported "Fed-cut probability at 80%" off a single market that
+  // priced an 80% rate HIKE: the derivation selected "cut markets" by bullishDirection === 1,
+  // so one mis-signed hike market became its only input.
+  it('REGRESSION: a hike-only Fed book never yields a high cut probability', async () => {
+    const hikeOnly: PolymarketSnapshot = {
+      source: 'fake', timestamp: now, freshness: 'fresh', historyMinutes: 2000,
+      markets: [
+        {
+          id: 'hike-big', title: 'Will the Fed increase interest rates by 25 bps after the September 2026 meeting?',
+          probability: 0.795, probChange15m: 0, probChange1h: 0, probChange4h: 0.01, probChange24h: 0.02,
+          volume: 4_000_000, liquidity: 1_118_824, expirationDate: '2026-09-16',
+          // Even if a stale/mis-signed row claims +1, the derivation must read the TITLE.
+          relevanceScore: 0.6, category: 'fed', bullishDirection: 1, lastUpdated: now,
+          informationValue: 0.8, velocityPpPerHour: 0.2, persistence: 0.7,
+        },
+      ],
+    };
+    const { bundle } = await runPipeline({
+      ...providers(),
+      polymarket: { fetchSnapshot: async () => hikeOnly },
+    });
+    const macro = bundle.signals['24h'].components.macro.details as { fedCutProbability: number | null };
+    // P(cut) ≤ 1 − P(hike): an 80%-priced hike can never imply an 80% chance of easing.
+    expect(macro.fedCutProbability).not.toBeNull();
+    expect(macro.fedCutProbability!).toBeLessThanOrEqual(1 - 0.795 + 1e-9);
+    expect(bundle.signals['24h'].components.macro.reasons.join(' ')).not.toMatch(/cut probability at (7|8|9)\d%/i);
+  });
 });

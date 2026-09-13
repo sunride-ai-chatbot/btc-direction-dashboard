@@ -204,14 +204,47 @@ export function informationValue(
   return clamp(extremeness * depth * timeFactor * activityFactor, 0, 1);
 }
 
+/** Whole-word keyword match: 'war' must not fire on "awards", 'fed' must fire on "Fed's". */
+function hasWord(text: string, keyword: string): boolean {
+  return new RegExp(`\\b${keyword.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\b`).test(text);
+}
+
+/** Central banks whose rate decisions are not the Fed's — their markets must not become 'fed'. */
+const OTHER_CENTRAL_BANKS = /\b(rba|ecb|boe|boj|snb|pboc|bank of (england|japan|canada)|european central bank|reserve bank)\b/;
+
 export function categorize(title: string): PolymarketCategory | null {
   const t = title.toLowerCase();
   const kw = POLYMARKET_CONFIG.keywords;
-  if (kw['btc-direct'].some((k) => t.includes(k))) return 'btc-direct';
-  if (kw.fed.some((k) => t.includes(k))) return 'fed';
-  if (kw.inflation.some((k) => t.includes(k))) return 'inflation';
-  if (kw.macro.some((k) => t.includes(k))) return 'macro';
-  if (kw.geopolitical.some((k) => t.includes(k))) return 'geopolitical';
+  if (kw['btc-direct'].some((k) => hasWord(t, k))) return 'btc-direct';
+  if (kw.fed.some((k) => hasWord(t, k)) && !OTHER_CENTRAL_BANKS.test(t)) return 'fed';
+  if (kw.inflation.some((k) => hasWord(t, k))) return 'inflation';
+  if (kw.macro.some((k) => hasWord(t, k))) return 'macro';
+  if (kw.geopolitical.some((k) => hasWord(t, k))) return 'geopolitical';
+  return null;
+}
+
+export type FedPolicyDirection = 'cut' | 'hike';
+
+/**
+ * What monetary-policy move a Fed market is about — deliberately separate from whether a
+ * rising YES is bullish for BTC, because the two questions have different answers and
+ * conflating them inverted both the market's sign and the derived cut probability.
+ *
+ * Tightening is tested FIRST and on whole words: "incr(ease)" contains the substring "ease",
+ * so a substring test on /ease/ scored the single most liquid Fed market — an 80%-priced
+ * rate HIKE — as an easing market, i.e. bullish (fixed 2026-09-13).
+ */
+export function fedPolicyDirection(title: string): FedPolicyDirection | null {
+  const t = title.toLowerCase();
+  // "no rate cut", "won't cut", "no change" are bets AGAINST easing.
+  const negatedCut = /\b(no|not|won't|wont|never)\b[^.?!]{0,24}\b(cut|cuts|lower|lowers|ease|eases|easing)\b/.test(t);
+  const hike = /\b(hike|hikes|hiking|raise|raises|raising|increase|increases|increasing|tighten|tightening)\b/.test(t);
+  const cut = /\b(cut|cuts|cutting|lower|lowers|lowering|ease|eases|easing|reduce|reduces|reducing)\b/.test(t);
+
+  if (negatedCut) return 'hike';
+  if (hike && !cut) return 'hike';
+  if (cut && !hike) return 'cut';
+  // "cut or hike", "no change" and other ambiguous phrasings stay unparsed rather than guessed.
   return null;
 }
 
@@ -231,22 +264,23 @@ export function bullishDirection(title: string, category: PolymarketCategory): 1
     return null;
   }
   if (category === 'fed') {
-    if (/cut|lower|ease/.test(t)) return 1;
-    if (/hike|raise|increase/.test(t)) return -1;
-    return null;
+    // Easing is bullish for BTC, tightening bearish. Ambiguous titles stay excluded.
+    const policy = fedPolicyDirection(t);
+    return policy === 'cut' ? 1 : policy === 'hike' ? -1 : null;
   }
   if (category === 'inflation') {
-    if (/(above|exceed|higher|over)/.test(t)) return -1;
-    if (/(below|under|lower)/.test(t)) return 1;
+    if (/\b(above|exceeds?|higher|over|hotter)\b/.test(t)) return -1;
+    if (/\b(below|under|lower|cooler)\b/.test(t)) return 1;
     return null;
   }
   if (category === 'macro') {
-    if (/recession|crash|default|shutdown/.test(t)) return -1;
-    if (/(s&p|stock market|nasdaq).*(above|reach|hit|record)/.test(t)) return 1;
+    if (/\b(recession|crash|default|shutdown)\b/.test(t)) return -1;
+    if (/(s&p|stock market|nasdaq).*\b(above|reach|hit|record)\b/.test(t)) return 1;
     return null;
   }
   if (category === 'geopolitical') {
-    if (/war|invade|strike|conflict|sanctions|tariff/.test(t)) return -1;
+    // Whole words: an unbounded /war/ also matched "awards", "warner" and "toward".
+    if (/\b(war|wars|invade|invades|invasion|strikes?|conflict|sanctions?|tariffs?)\b/.test(t)) return -1;
     return null;
   }
   return null;

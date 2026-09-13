@@ -63,9 +63,13 @@ export const ALERT_THRESHOLDS = {
 
 export const POLYMARKET_CONFIG = {
   gammaBase: process.env.POLYMARKET_GAMMA_URL ?? 'https://gamma-api.polymarket.com',
+  // Matched as whole words (see categorize()), so 'war' cannot match "awards" and
+  // 'fed' matches "Fed's" / "the Fed?" without the old trailing-space hack.
+  // A bare "interest rate" is deliberately NOT a Fed keyword: it also matches the RBA,
+  // ECB, BoE and BoJ, whose decisions must not feed the US-rate expectation.
   keywords: {
     'btc-direct': ['bitcoin', 'btc'],
-    fed: ['fed ', 'federal reserve', 'rate cut', 'rate hike', 'fomc', 'interest rate'],
+    fed: ['fed', 'federal reserve', 'fomc', 'rate cut', 'rate hike'],
     inflation: ['cpi', 'inflation'],
     macro: ['recession', 'gdp', 'unemployment', 'treasury', 'stock market', 's&p'],
     geopolitical: ['war', 'election', 'tariff', 'china', 'sanctions'],

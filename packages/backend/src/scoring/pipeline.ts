@@ -1,5 +1,6 @@
 import { HORIZONS } from '../types.js';
 import type { CvdSnapshot, Horizon, PolymarketSnapshot, PriceConsensus, SignalBundle, SignalLabel } from '../types.js';
+import { fedPolicyDirection } from '../providers/polymarket.js';
 import type { PolymarketProvider } from '../providers/polymarket.js';
 import type { BitcoinPriceProvider } from '../providers/bitcoin.js';
 import type { EtfProvider } from '../providers/etf.js';
@@ -49,11 +50,23 @@ export async function runPipeline(
     providers.macro.fetchMacro(),
   ]);
 
-  const fedMarkets = polySnapshot.markets.filter((m) => m.category === 'fed' && m.bullishDirection === 1);
-  if (fedMarkets.length > 0 && macro.available) {
-    const totalLiq = fedMarkets.reduce((a, m) => a + m.liquidity, 0);
-    if (totalLiq > 0) {
-      macro.fedCutProbability = fedMarkets.reduce((a, m) => a + m.probability * m.liquidity, 0) / totalLiq;
+  // Only markets explicitly ABOUT easing may set the cut probability. Using
+  // `bullishDirection === 1` as a proxy conflated "is a cut market" with "rising YES is
+  // bullish", so a mis-signed hike market became the sole input and reported an 80%
+  // *cut* probability while the market priced an 80% *hike*. A hike market is the
+  // complement of the same decision — P(cut) ≤ 1 − P(hike) — so it is used only as a
+  // ceiling, never as evidence of easing. With no parsed cut market the probability
+  // stays null and scoreMacro drops the term rather than inventing one.
+  const fedCutMarkets = polySnapshot.markets.filter((m) => m.category === 'fed' && fedPolicyDirection(m.title) === 'cut');
+  const fedHikeMarkets = polySnapshot.markets.filter((m) => m.category === 'fed' && fedPolicyDirection(m.title) === 'hike');
+  if (macro.available) {
+    const cutLiq = fedCutMarkets.reduce((a, m) => a + m.liquidity, 0);
+    if (cutLiq > 0) {
+      macro.fedCutProbability = fedCutMarkets.reduce((a, m) => a + m.probability * m.liquidity, 0) / cutLiq;
+    } else if (fedHikeMarkets.length > 0) {
+      const hikeLiq = fedHikeMarkets.reduce((a, m) => a + m.liquidity, 0);
+      const pHike = fedHikeMarkets.reduce((a, m) => a + m.probability * m.liquidity, 0) / hikeLiq;
+      macro.fedCutProbability = Math.max(0, 1 - pHike);
     }
   }
 

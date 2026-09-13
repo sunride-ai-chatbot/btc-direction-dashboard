@@ -358,3 +358,27 @@ Key judgment calls made while building the MVP, so they can be revisited deliber
     not the current Railway history. The challenger is stored in `context_json`, copied into the
     evaluation snapshot, and compared on non-flat, non-overlapping 1h outcomes. The primary score,
     labels, confidence, schema and Railway topology remain unchanged until forward evidence wins.
+
+## Phase 6c — Polymarket parser correctness (2026-09-13)
+
+72. **Substring matching on policy words was inverting the highest-weight input.** The `fed`
+    branch tested `/cut|lower|ease/` BEFORE `/hike|raise|increase/`, and "incr**ease**" contains
+    "ease" — so `"Will the Fed increase interest rates by 25 bps after the September 2026
+    meeting?"` (**$1.12M liquidity, 79.5% priced — the single most liquid tracked market**) was
+    scored **bullish** while two smaller hike markets on the same decision were scored bearish.
+    All keyword and direction matching is now whole-word (`\b`), tightening is tested first, and
+    `"no rate cut"` reads as a bet against easing. Verified against the live book: exactly one
+    market changes sign, and the three Fed hike markets now agree.
+73. **"Is this a cut market" is not "is rising YES bullish".** `pipeline.ts` selected cut markets
+    by `bullishDirection === 1`, so the one mis-signed hike market became the sole input and
+    produced `fedCutProbability = 0.795` — reported to the user as *"Fed-cut probability at 80%"*
+    and worth +22 on the macro score — while the market priced an ~81% **hike**. The probability
+    is now derived only from titles explicitly parsed as easing (`fedPolicyDirection() === 'cut'`).
+    A hike market is the complement of the same decision, so it is used only as the ceiling
+    P(cut) ≤ 1 − P(hike) (19.2% on the live book), never as evidence of easing; with no parsed cut
+    market the value stays null and `scoreMacro` drops the term instead of inventing one.
+74. **Scoring epoch boundary.** Evaluations written before this deploy carry a wrong-sign input in
+    both the Polymarket and macro components and must not be pooled with later rows when judging
+    edge. Until a `scoring_version` column exists, split on the deploy timestamp recorded in the
+    commit for this change. Other central banks (RBA/ECB/BoE/BoJ) no longer categorize as `fed`,
+    and a bare "interest rate" is no longer a Fed keyword.
