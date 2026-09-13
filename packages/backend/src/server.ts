@@ -2,6 +2,7 @@ import Fastify from 'fastify';
 import cors from '@fastify/cors';
 import { timingSafeEqual } from 'node:crypto';
 import { writeFileSync, renameSync, rmSync, readdirSync, createReadStream, statSync, statfsSync, mkdirSync } from 'node:fs';
+import { dirname } from 'node:path';
 import type { ServerResponse } from 'node:http';
 import { SignalDatabase } from './db/database.js';
 import { GammaPolymarketProvider } from './providers/polymarket.js';
@@ -22,7 +23,7 @@ import { cached } from './utils/cached.js';
 import { HealthRegistry } from './utils/health.js';
 import { toCsv } from './utils/csv.js';
 import {
-  BACKUP_CONFIG, DERIVATIVES_CONFIG, DIVERGENCE_CONFIG, EDGE_GATE_CONFIG, EVALUATION_CONFIG, HORIZON_WEIGHTS, NEUTRAL_THRESHOLD_PCT,
+  BACKUP_CONFIG, PRUNE_CONFIG, DERIVATIVES_CONFIG, DIVERGENCE_CONFIG, EDGE_GATE_CONFIG, EVALUATION_CONFIG, HORIZON_WEIGHTS, NEUTRAL_THRESHOLD_PCT,
   REFRESH_INTERVALS_MS, SERVER_CONFIG, STREAM_CONFIG,
 } from './config.js';
 import { HORIZONS, type ConformalInterval, type EdgeStats, type Horizon, type SignalBundle, type SignalLabel, type PolymarketSnapshot } from './types.js';
@@ -285,6 +286,49 @@ interface BackupState {
 const backupState: BackupState = { lastOkTs: null, lastError: null, lastBytes: null, lastPath: null };
 
 /** Verified nightly snapshot + retention. Never throws: a failed backup must not kill the scheduler. */
+/** Fraction of the data volume currently in use, or null if it cannot be measured. */
+function volumeUsedFraction(): number | null {
+  try {
+    const fs = statfsSync(dirname(SERVER_CONFIG.dbPath));
+    const total = fs.blocks * fs.bsize;
+    if (!total) return null;
+    return (total - fs.bavail * fs.bsize) / total;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Delete raw provider inputs past their retention. Normally that is a year — these
+ * tables are small and are the only record of what the providers actually said, so
+ * they are worth far more than the ~0.5 MB/day they cost. The short retention only
+ * applies when the volume is genuinely under pressure, and a destructive pass is
+ * always logged with what it removed.
+ */
+function runPrune(): void {
+  if (shuttingDown || !PRUNE_CONFIG.enabled) return;
+  const used = volumeUsedFraction();
+  const pressured = used !== null && used >= PRUNE_CONFIG.pressureFraction;
+  const days = pressured ? PRUNE_CONFIG.pressureDays : PRUNE_CONFIG.days;
+  try {
+    const deleted = db.pruneOldData(days * 24 * 3_600_000);
+    const total = Object.values(deleted).reduce((a, b) => a + b, 0);
+    if (total > 0) {
+      const detail = Object.entries(deleted).filter(([, n]) => n > 0).map(([t, n]) => `${t}=${n}`).join(' ');
+      console.log(`[prune] removed ${total} raw input row(s) older than ${days}d — ${detail}`);
+    }
+    if (pressured) {
+      db.insertAlert(
+        'storage-pressure',
+        `Data volume ${(used! * 100).toFixed(0)}% full — raw input retention cut to ${days} days.`,
+        'warning', null, Date.now(),
+      );
+    }
+  } catch (err) {
+    console.error('[prune] failed:', err);
+  }
+}
+
 function runBackup(): void {
   if (shuttingDown || !BACKUP_CONFIG.enabled) return;
   const startedAt = Date.now();
@@ -385,6 +429,16 @@ app.get('/health', async (_req, reply) => {
     backup: BACKUP_CONFIG.enabled
       ? { lastOkTs: backupState.lastOkTs, ageHours: backupState.lastOkTs ? +((Date.now() - backupState.lastOkTs) / 3_600_000).toFixed(1) : null, lastBytes: backupState.lastBytes, lastError: backupState.lastError }
       : { disabled: true },
+    // The volume is fixed-size and shared by the database and its snapshots. Growth
+    // that is only discovered when writes start failing is discovered too late.
+    storage: (() => {
+      const used = volumeUsedFraction();
+      return {
+        databaseBytes: db.databaseBytes(),
+        volumeUsedPct: used === null ? null : +(used * 100).toFixed(1),
+        rawInputRetentionDays: PRUNE_CONFIG.enabled ? PRUNE_CONFIG.days : null,
+      };
+    })(),
   });
 });
 
@@ -697,7 +751,9 @@ async function main(): Promise<void> {
   timers.push(setInterval(refreshNews, REFRESH_INTERVALS_MS.news));
   timers.push(setInterval(refreshDerivatives, REFRESH_INTERVALS_MS.derivatives));
   timers.push(setInterval(evaluateDueSignals, EVALUATION_CONFIG.jobIntervalMs));
-  timers.push(setInterval(() => db.pruneOldData(30 * 24 * 3_600_000), 6 * 3_600_000));
+  if (PRUNE_CONFIG.enabled) {
+    timers.push(setInterval(runPrune, PRUNE_CONFIG.intervalMs));
+  }
   if (BACKUP_CONFIG.enabled) {
     // One snapshot at boot (so a fresh deploy is immediately protected), then aligned to
     // BACKUP_UTC_MINUTE — deliberately away from the 5-minute evaluator tick.

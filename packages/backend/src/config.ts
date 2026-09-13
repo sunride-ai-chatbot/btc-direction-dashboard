@@ -109,6 +109,31 @@ export const SERVER_CONFIG = {
  * which protects against corruption and bad migrations but NOT against volume loss, so the
  * token-guarded download endpoint exists to pull them off-box.
  */
+/**
+ * Retention for raw provider inputs (polymarket_history, btc_price_history,
+ * btc_candles_1m, derivatives_history).
+ *
+ * These four tables are 8% of the database (~0.5 MB/day) and are the only copy of
+ * what the providers actually said at the time. They are also the only way to
+ * re-score history when the scoring changes — which is not hypothetical: the
+ * parser fix stranded 12,843 evaluations in a non-comparable epoch, and raw inputs
+ * are what a re-score would need. Deleting them at 30 days to reclaim half a
+ * megabyte a day was the wrong trade, so the default retention is a year and the
+ * calendar rule yields to actual disk pressure.
+ *
+ * (The real growth driver is signals.context_json at ~40 MB of the 59 MB signals
+ * table — see DECISIONS. Pruning never touched it.)
+ */
+export const PRUNE_CONFIG = {
+  enabled: process.env.PRUNE !== 'off',
+  days: envInt('PRUNE_DAYS', 365),
+  /** Retention applied instead when the volume is under pressure. */
+  pressureDays: envInt('PRUNE_PRESSURE_DAYS', 30),
+  /** Fraction of the volume in use above which pressureDays applies. */
+  pressureFraction: 0.85,
+  intervalMs: 6 * 3_600_000,
+};
+
 export const BACKUP_CONFIG = {
   enabled: process.env.BACKUPS !== 'off',
   /** Directory for snapshots; defaults next to the database so it lands on the volume. */

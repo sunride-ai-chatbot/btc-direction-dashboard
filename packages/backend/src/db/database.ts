@@ -19,13 +19,16 @@ export const LATEST_SCHEMA_VERSION = 7;
  * v2 — Phase 2: signals.raw_label + signals.context_json, evaluations, divergences
  * v3 — etf_flow_history · v4 — news_items · v5 — evaluation provenance + btc_candles_1m
  * v6 — nullable candle taker split (exchange-agnostic order flow) + derivatives_history
+ * v7 — scoring_version on signals + evaluations (scoring epochs; see scoring/version.ts)
  * All data lives in one SQLite file; restarts must never lose rows.
  */
 export class SignalDatabase {
   private db: DatabaseSync;
+  private readonly path: string;
 
   constructor(path: string) {
     if (path !== ':memory:') mkdirSync(dirname(path), { recursive: true });
+    this.path = path;
     this.db = new DatabaseSync(path);
     this.db.exec('PRAGMA journal_mode = WAL');
     this.migrate();
@@ -774,12 +777,32 @@ export class SignalDatabase {
     }
   }
 
-  pruneOldData(olderThanMs: number): void {
+  /**
+   * Delete raw provider inputs older than the cutoff. Signals and evaluations are
+   * never pruned. Returns what was deleted so the caller can log a destructive
+   * operation rather than performing it silently.
+   */
+  pruneOldData(olderThanMs: number): Record<string, number> {
     const cutoff = Date.now() - olderThanMs;
-    this.db.prepare('DELETE FROM polymarket_history WHERE ts < ?').run(cutoff);
-    this.db.prepare('DELETE FROM btc_price_history WHERE ts < ?').run(cutoff);
-    this.db.prepare('DELETE FROM btc_candles_1m WHERE ts < ?').run(cutoff);
-    this.db.prepare('DELETE FROM derivatives_history WHERE ts < ?').run(cutoff);
+    const deleted: Record<string, number> = {};
+    for (const table of ['polymarket_history', 'btc_price_history', 'btc_candles_1m', 'derivatives_history']) {
+      const result = this.db.prepare(`DELETE FROM ${table} WHERE ts < ?`).run(cutoff);
+      deleted[table] = Number(result.changes);
+    }
+    return deleted;
+  }
+
+  /** Bytes on disk for the live database file, including its WAL if present. */
+  databaseBytes(): number {
+    let total = 0;
+    for (const suffix of ['', '-wal', '-shm']) {
+      try {
+        total += statSync(this.path + suffix).size;
+      } catch {
+        // not present — WAL and SHM only exist while the database is open in WAL mode
+      }
+    }
+    return total;
   }
 
   close(): void {

@@ -442,3 +442,31 @@ Key judgment calls made while building the MVP, so they can be revisited deliber
     the database and in `evaluations.csv` (which now carries `scoring_version`), and the
     evaluation page states how many rows are held out and why. A figure over 216 rows must not
     be presented the way a figure over 13,053 was.
+
+## Phase 6f — retention (2026-09-13)
+
+85. **Pruning was deleting the wrong 8%.** `pruneOldData(30 days)` hard-deleted
+    `polymarket_history`, `btc_price_history`, `btc_candles_1m` and `derivatives_history`
+    every six hours. Measured against the live database those four tables are 6.0 MB of
+    71.9 MB (~0.5 MB/day), and they are the only record of what the providers actually said
+    — and therefore the only way to re-score history when scoring changes. That is not a
+    hypothetical need: the parser fix stranded 12,843 evaluations in a non-comparable epoch
+    (#79–84), and re-scoring them from raw inputs is the only way to recover them. The first
+    deletion would have landed 2026-10-01. Retention is now `PRUNE_DAYS`, default 365.
+86. **Calendar retention yields to actual disk pressure.** A fixed day count is either too
+    short (destroying data while the volume is 4% full) or too long (filling it). Pruning now
+    uses the long retention normally and `PRUNE_PRESSURE_DAYS` (30) only when the volume is
+    past 85% full, raising an alert when it does. Every destructive pass logs what it removed.
+87. **The real growth driver was never pruned.** `signals.context_json` is 40.2 MB of the
+    58.8 MB signals table — 56% of the whole database — because the full scoring context is
+    written once per horizon per tick, and much of it (`polymarketMarketsUsed`, `macroValues`,
+    `etfValues`) is identical across all four horizons of the same tick. At ~4.7 MB/day this,
+    not the raw inputs, is what will eventually fill the 5 GB volume. Deliberately left alone
+    for now (the volume is at 227 MB / 5 GB); `/health.storage` exposes `databaseBytes` and
+    `volumeUsedPct` so it is observed rather than discovered when writes start failing.
+88. **The evaluator stall was not real.** The roadmap carried an item for unevaluable rows
+    starving the `LIMIT 200` queue. Measured against production: 0 due-but-unevaluated rows on
+    every horizon, and the only permanently-unevaluable class (4 rows with a NULL price) is
+    already excluded by the `btc_price IS NOT NULL` filter. No `evaluation_status` column was
+    added — the gap between 14,268 signals and 13,065 evaluations is entirely signals whose
+    horizon has not elapsed.
