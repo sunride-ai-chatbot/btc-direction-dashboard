@@ -386,8 +386,8 @@ Key judgment calls made while building the MVP, so they can be revisited deliber
 ## Phase 6d — durable data (2026-09-13)
 
 75. **The database is the only irreplaceable asset, so it is backed up before it is migrated.**
-    14,224 signals and 13,017 evaluations represent months of wall-clock time that cannot be
-    regenerated from any API — replaying history is impossible because the inputs (order books,
+    14,256 signals and 13,053 evaluations represent 12.5 days of wall-clock accumulation (from
+    2026-09-01) that cannot be regenerated from any API — replaying history is impossible because the inputs (order books,
     Polymarket prices, ETF flows) are not queryable retroactively. Roadmap #2 adds a schema
     migration; a migration that goes wrong on an unbacked-up volume is unrecoverable. So #6 ships
     first: a snapshot at boot and every 24h via `VACUUM INTO` (consistent under concurrent writes,
@@ -406,3 +406,39 @@ Key judgment calls made while building the MVP, so they can be revisited deliber
     it, endpoints disabled entirely when unset) and a `/^signals-[\d-]+\.sqlite$/` name guard that
     rejects traversal. Verified end to end: the downloaded file opens as a standalone database
     with all 11 tables and passes its own integrity check.
+
+## Phase 6e — scoring epochs (2026-09-13)
+
+79. **Every stored signal now carries the scoring version that produced it.** Rows written
+    before the Polymarket parser fix carry a wrong-sign input in the polymarket and macro
+    components (DECISIONS #72–74); pooling them with later rows does not add evidence, it
+    corrupts it. `signals.scoring_version` / `evaluations.scoring_version` (migration v7)
+    stamp the epoch, an evaluation inherits the version of the signal it judges rather than
+    whatever epoch was current when the evaluator reached it, and reports pool only versions
+    at or above `MIN_POOLABLE_VERSION`.
+80. **The v1→v2 boundary was measured, not guessed.** Rather than trusting a deploy log, the
+    boundary was read out of production data: `signals.macro_score` for 1h steps
+    +22.20 → −21.19 at 2026-09-13T08:21:10.983Z, two minutes after commit 3e95516 — exactly
+    the flip predicted when the fix was written. That instant is `PARSER_FIX_TS`, and the
+    migration attributes 12,837 evaluations to v1 and 216 to v2 (verified by rehearsing the
+    migration against a copy of the live 220MB database: 161ms, nothing deleted).
+81. **v2 and v3 are pooled on evidence, not on assumption.** They differ only in the
+    price-only technical branch, and that branch fired on 0 of the 548 signals written during
+    v2 — the candle work in 2b10b5b/4cbaf85 had already restored indicator data — so v2 rows
+    are arithmetically identical to what v3 would have produced.
+82. **A technical component with no indicators is unavailable, not neutral.** The
+    `parts.length === 0` branch returned `score: 0, available: true`, keeping technical's full
+    weight in the average while contributing nothing and diluting the components that did have
+    data. It fired on 80% of historical 1h signals (Binance was geo-blocked from Railway) and
+    on 0% since the candle work. It now reports `available: false`, which redistributes the
+    weight and docks confidence — what the absence of the input actually means.
+83. **Reliability is counted in independent samples.** Filtering to one epoch exposed that
+    `MIN_RELIABLE_SAMPLES = 50` counts overlapping rows: 4h showed "reliable, 20% accuracy"
+    built on **2** non-overlapping observations spanning 7.5 hours, and 1h's 44.4% on 8. While
+    13k rows across 12 days were pooled the distinction was cosmetic; at one epoch it is not.
+    `reliable` now additionally requires `MIN_INDEPENDENT_SAMPLES = 30` after
+    `thinToNonOverlapping`, and the report exposes `independentSamples` beside every count.
+84. **Excluded rows are reported, never hidden.** Nothing is deleted: all 13,064 rows stay in
+    the database and in `evaluations.csv` (which now carries `scoring_version`), and the
+    evaluation page states how many rows are held out and why. A figure over 216 rows must not
+    be presented the way a figure over 13,053 was.

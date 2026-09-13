@@ -35,7 +35,7 @@ function ReportCard({ r }: { r: HorizonEvaluationReport }) {
           {r.horizon === 'overall' ? t('eval.overall') : t(`horizon.${r.horizon}` as TranslationKey)}
         </span>
         <span className={`text-xs font-semibold tabular-nums ${r.reliable ? 'text-slate-500' : 'text-flat'}`}>
-          {t('eval.n', { n: r.totalEvaluated })} {!r.reliable && t('eval.unreliable')}
+          {t('eval.n', { n: r.totalEvaluated, ind: r.independentSamples })} {!r.reliable && t('eval.unreliable')}
         </span>
       </div>
       <dl className="mt-3 grid grid-cols-2 gap-x-4 gap-y-1.5 text-sm">
@@ -175,8 +175,29 @@ export function EvaluationPage() {
 
       <div className="mt-3 flex gap-3 rounded-xl border border-flat/40 bg-flat/5 p-4 text-sm text-flat">
         <IconWarning className="mt-0.5 h-4 w-4 shrink-0" />
-        <span>{t('eval.warning', { min: data.minReliableSamples, n: data.overall.totalEvaluated })}</span>
+        <span>
+          {t('eval.warning', {
+            min: data.minReliableSamples,
+            minInd: data.minIndependentSamples,
+            n: data.overall.totalEvaluated,
+            ind: data.overall.independentSamples,
+          })}
+        </span>
       </div>
+
+      {data.scoringEpoch.excludedEvaluations > 0 && (
+        <div className="mt-3 rounded-xl border border-border bg-card p-4 text-sm text-slate-300">
+          <div className="font-semibold text-slate-200">
+            {t('eval.epochTitle', { v: data.scoringEpoch.current })}
+          </div>
+          <p className="mt-1 leading-relaxed text-slate-400">
+            {t('eval.epochBody', {
+              excluded: data.scoringEpoch.excludedEvaluations.toLocaleString(),
+              pooled: data.scoringEpoch.pooledEvaluations.toLocaleString(),
+            })}
+          </p>
+        </div>
+      )}
 
       {hasData && <ReliabilityPanel />}
 

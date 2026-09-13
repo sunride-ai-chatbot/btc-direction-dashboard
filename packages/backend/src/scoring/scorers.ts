@@ -211,15 +211,20 @@ export function scoreTechnical(tech: BitcoinTechnicals, horizon: Horizon, cvd: C
     if (tech.volumeChange24h < -30) risks.push('24h volume shrinking — weak conviction behind current price');
   }
 
+  // No indicator could be computed. A 0 score here is not "neutral evidence" — it is
+  // *no* evidence, and reporting it as available kept technical's full weight in the
+  // average while contributing nothing, diluting the components that did have data.
+  // Marking it unavailable redistributes that weight to them and docks confidence,
+  // which is what the absence of the input actually means.
   if (parts.length === 0) {
     return {
       score: 0,
       weight: 0,
-      available: true,
+      available: false,
       freshness: tech.freshness,
       details: { price: tech.price, source: tech.source, note: 'price only, indicators unavailable' },
-      reasons: ['BTC price available but technical indicators could not be computed'],
-      risks: ['Technical signal limited to price-only data'],
+      reasons: [],
+      risks: ['Technical indicators unavailable — only a BTC price was reachable, so the technical component is excluded'],
     };
   }
 

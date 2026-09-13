@@ -207,6 +207,8 @@ export interface EvaluationBucket {
 export interface HorizonEvaluationReport {
   horizon: Horizon | 'overall';
   totalEvaluated: number;
+  /** Non-overlapping observations behind totalEvaluated — what `reliable` is judged on. */
+  independentSamples: number;
   reliable: boolean;
   directionalAccuracy: number | null;
   rawDirectionalAccuracy: number | null;
@@ -219,8 +221,18 @@ export interface HorizonEvaluationReport {
   bySession: Array<{ session: string; total: number; correct: number; accuracy: number | null }>;
 }
 
+export interface ScoringEpochReport {
+  current: number;
+  minPooled: number;
+  pooledEvaluations: number;
+  excludedEvaluations: number;
+  epochs: Array<{ version: number | null; n: number; from: number | null; to: number | null; pooled: boolean; summary: string | null }>;
+}
+
 export interface EvaluationReportPayload {
   minReliableSamples: number;
+  minIndependentSamples: number;
+  scoringEpoch: ScoringEpochReport;
   overall: HorizonEvaluationReport;
   horizons: HorizonEvaluationReport[];
 }

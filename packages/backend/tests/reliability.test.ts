@@ -9,7 +9,7 @@ import {
   classifyRegime, computeEdgeStats, conformalCoverage, driftReport, fitConformal, neutralBandPct,
   realizedHorizonSigmaPct, scoreBucket, similarStates, thinToNonOverlapping, HORIZON_MINUTES, type EvalLike,
 } from '../src/scoring/edge.js';
-import { SignalDatabase } from '../src/db/database.js';
+import { SignalDatabase, LATEST_SCHEMA_VERSION } from '../src/db/database.js';
 import { currentBands, runEvaluationPass, HORIZON_MS } from '../src/scoring/evaluator.js';
 import { buildSignal, type ComponentSet } from '../src/scoring/engine.js';
 import { NEUTRAL_THRESHOLD_PCT, EDGE_GATE_CONFIG } from '../src/config.js';
@@ -523,7 +523,7 @@ describe('v5 migration crash-safety', () => {
       const db = new SignalDatabase(path);
       expect(db.countsByTable().signals).toBe(1);
       expect(db.countsByTable().evaluations).toBe(1);
-      expect(db.getEvaluations()[0].band_method).toBe('fixed-v1');
+      expect(db.getEvaluations(undefined, { allEpochs: true })[0].band_method).toBe('fixed-v1');
       db.close();
     } finally {
       rmSync(dir, { recursive: true, force: true });
@@ -554,6 +554,7 @@ describe('v5 migration crash-safety', () => {
       const check = new DatabaseSync(path);
       const cols = (check.prepare('PRAGMA table_info(evaluations)').all() as Array<{ name: string }>).map((c) => c.name);
       expect(cols).not.toContain('band_pct');
+      // Still at the pre-migration version: the rolled-back attempt changed nothing.
       expect((check.prepare('PRAGMA user_version').get() as { user_version: number }).user_version).toBe(4);
       check.close();
 
@@ -561,11 +562,11 @@ describe('v5 migration crash-safety', () => {
       // no "duplicate column name" from a half-applied prior attempt.
       const recovered = new SignalDatabase(path);
       expect(recovered.countsByTable().signals).toBe(1);
-      expect(recovered.getEvaluations()[0].band_method).toBe('fixed-v1');
+      expect(recovered.getEvaluations(undefined, { allEpochs: true })[0].band_method).toBe('fixed-v1');
       recovered.close();
 
       const final = new DatabaseSync(path);
-      expect((final.prepare('PRAGMA user_version').get() as { user_version: number }).user_version).toBe(6);
+      expect((final.prepare('PRAGMA user_version').get() as { user_version: number }).user_version).toBe(LATEST_SCHEMA_VERSION);
       final.close();
     } finally {
       rmSync(dir, { recursive: true, force: true });
@@ -609,7 +610,7 @@ describe('v6 migration — nullable taker split + derivatives history', () => {
       db.close();
 
       const final = new DatabaseSync(path);
-      expect((final.prepare('PRAGMA user_version').get() as { user_version: number }).user_version).toBe(6);
+      expect((final.prepare('PRAGMA user_version').get() as { user_version: number }).user_version).toBe(LATEST_SCHEMA_VERSION);
       expect(final.prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'btc_candles_1m_v6'").all()).toHaveLength(0);
       final.close();
     } finally {

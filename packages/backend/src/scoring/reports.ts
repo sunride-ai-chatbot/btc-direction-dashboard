@@ -5,9 +5,22 @@ import { computeEdgeStats, conformalCoverage, driftReport, fitConformal, thinToN
 import { currentBands } from './evaluator.js';
 import { NEUTRAL_THRESHOLD_PCT, CONFORMAL_CONFIG } from '../config.js';
 import { quantile, wilsonInterval } from '../utils/stats.js';
+import { SCORING_EPOCHS, SCORING_VERSION, MIN_POOLABLE_VERSION } from './version.js';
 
 /** Below this many evaluated signals per horizon, results are flagged unreliable. */
 export const MIN_RELIABLE_SAMPLES = 50;
+
+/**
+ * Reliability is counted in *independent* samples, not stored rows.
+ *
+ * 1h signals are written every few minutes, so 126 rows can be 8 non-overlapping
+ * observations of the same 10 hours of market. While the reports pooled 13k rows
+ * across 12 days the distinction was cosmetic; once rows are filtered to one
+ * scoring epoch it stops being cosmetic, and a raw-count threshold would label a
+ * two-sample measurement "reliable". Overlapping rows are still shown — they are
+ * what the accuracy is computed over — but they no longer decide the flag.
+ */
+export const MIN_INDEPENDENT_SAMPLES = 30;
 
 export const CONFIDENCE_BUCKETS: Array<{ key: string; min: number; max: number }> = [
   { key: '0-49', min: 0, max: 49 },
@@ -28,6 +41,8 @@ function avg(values: number[]): number | null {
 export interface HorizonEvaluationReport {
   horizon: Horizon | 'overall';
   totalEvaluated: number;
+  /** Non-overlapping observations behind totalEvaluated — what `reliable` is judged on. */
+  independentSamples: number;
   reliable: boolean;
   directionalAccuracy: number | null;
   rawDirectionalAccuracy: number | null;
@@ -40,8 +55,41 @@ export interface HorizonEvaluationReport {
   bySession: Array<{ session: string; total: number; correct: number; accuracy: number | null }>;
 }
 
+export interface ScoringEpochReport {
+  current: number;
+  minPooled: number;
+  /** Rows counted in the figures above. */
+  pooledEvaluations: number;
+  /** Rows held out because they came from an older, non-comparable scoring epoch. */
+  excludedEvaluations: number;
+  epochs: Array<{ version: number | null; n: number; from: number | null; to: number | null; pooled: boolean; summary: string | null }>;
+}
+
+/**
+ * Which stored rows are comparable with today's scoring, and which are held out.
+ * Excluded rows are reported, never deleted and never silently dropped: a figure
+ * computed over 216 rows must not look like one computed over 13,053.
+ */
+export function buildScoringEpochReport(db: SignalDatabase): ScoringEpochReport {
+  const byEpoch = db.evaluationsByEpoch();
+  const epochs = byEpoch.map((e) => ({
+    ...e,
+    pooled: (e.version ?? 0) >= MIN_POOLABLE_VERSION,
+    summary: SCORING_EPOCHS.find((s) => s.version === e.version)?.summary ?? null,
+  }));
+  return {
+    current: SCORING_VERSION,
+    minPooled: MIN_POOLABLE_VERSION,
+    pooledEvaluations: epochs.filter((e) => e.pooled).reduce((a, e) => a + e.n, 0),
+    excludedEvaluations: epochs.filter((e) => !e.pooled).reduce((a, e) => a + e.n, 0),
+    epochs,
+  };
+}
+
 export function buildEvaluationReport(db: SignalDatabase): {
   minReliableSamples: number;
+  minIndependentSamples: number;
+  scoringEpoch: ScoringEpochReport;
   overall: HorizonEvaluationReport;
   horizons: HorizonEvaluationReport[];
 } {
@@ -49,9 +97,24 @@ export function buildEvaluationReport(db: SignalDatabase): {
   const horizons = HORIZONS.map((h) => summarize(h, all.filter((e) => e.horizon === h)));
   return {
     minReliableSamples: MIN_RELIABLE_SAMPLES,
+    minIndependentSamples: MIN_INDEPENDENT_SAMPLES,
+    scoringEpoch: buildScoringEpochReport(db),
     overall: summarize('overall', all),
     horizons,
   };
+}
+
+/**
+ * Non-overlapping observations behind a set of rows. For 'overall' the horizons are
+ * thinned separately and summed, because a 1h and a 72h row are not the same trial.
+ */
+function independentCount(horizon: Horizon | 'overall', rows: EvaluationRow[]): number {
+  const thin = (h: Horizon, rs: EvaluationRow[]) =>
+    thinToNonOverlapping(rs.filter((r) => r.actual_direction !== 'flat'), HORIZON_MINUTES[h]).length;
+  if (horizon === 'overall') {
+    return HORIZONS.reduce((a, h) => a + thin(h, rows.filter((r) => r.horizon === h)), 0);
+  }
+  return thin(horizon, rows);
 }
 
 function summarize(horizon: Horizon | 'overall', rows: EvaluationRow[]): HorizonEvaluationReport {
@@ -80,10 +143,13 @@ function summarize(horizon: Horizon | 'overall', rows: EvaluationRow[]): Horizon
     return { session, total: inSession.length, correct, accuracy: acc(correct, inSession.length) };
   });
 
+  const independent = independentCount(horizon, rows);
+
   return {
     horizon,
     totalEvaluated: rows.length,
-    reliable: rows.length >= MIN_RELIABLE_SAMPLES,
+    independentSamples: independent,
+    reliable: independent >= MIN_INDEPENDENT_SAMPLES && rows.length >= MIN_RELIABLE_SAMPLES,
     directionalAccuracy: acc(rows.filter((r) => r.correct === 1).length, rows.length),
     rawDirectionalAccuracy: acc(rows.filter((r) => r.raw_correct === 1).length, rows.length),
     bullishAccuracy: acc(bullish.filter((r) => r.correct === 1).length, bullish.length),

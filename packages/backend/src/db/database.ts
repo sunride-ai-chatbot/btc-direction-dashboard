@@ -5,6 +5,13 @@ import type { Candle1m, Horizon, HorizonSignal, SignalLabel, StoredEvaluation, D
 import type { CmcNewsItem } from '../providers/cmcNews.js';
 import type { VenueReading } from '../providers/derivatives.js';
 import { classifyRegime as regimeFromTechnical } from '../scoring/edge.js';
+import { PARSER_FIX_TS, SCORING_VERSION, MIN_POOLABLE_VERSION } from '../scoring/version.js';
+
+/**
+ * Schema version this build migrates to. Tests assert against this rather than a
+ * literal, so adding a migration does not require editing unrelated migration tests.
+ */
+export const LATEST_SCHEMA_VERSION = 7;
 
 /**
  * Versioned schema via PRAGMA user_version.
@@ -233,6 +240,38 @@ export class SignalDatabase {
         throw err;
       }
     }
+
+    // v7 — scoring epoch stamp. Rows written before the Polymarket parser fix carry a
+    // wrong-sign input in the polymarket and macro components; pooling them with later
+    // rows silently corrupts every accuracy and edge figure. Existing rows are attributed
+    // from their own timestamp against the boundary measured in production data
+    // (versionForTimestamp), evaluations inherit the version of the signal they judge, and
+    // rows written from here on are stamped SCORING_VERSION by the insert. Same
+    // single-transaction rule as v5/v6.
+    if (this.userVersion < 7) {
+      this.db.exec('BEGIN');
+      try {
+        this.db.exec(`
+          ALTER TABLE signals ADD COLUMN scoring_version INTEGER;
+          ALTER TABLE evaluations ADD COLUMN scoring_version INTEGER;
+        `);
+        this.db.prepare('UPDATE signals SET scoring_version = CASE WHEN ts < ? THEN 1 ELSE 2 END WHERE scoring_version IS NULL').run(PARSER_FIX_TS);
+        // An evaluation judges a signal, so it belongs to that signal's epoch — not to
+        // the epoch that happened to be current when the evaluator got around to it.
+        this.db.exec(`
+          UPDATE evaluations SET scoring_version = COALESCE(
+            (SELECT s.scoring_version FROM signals s WHERE s.id = evaluations.signal_id),
+            CASE WHEN evaluations.signal_ts < ${PARSER_FIX_TS} THEN 1 ELSE 2 END
+          ) WHERE scoring_version IS NULL;
+          CREATE INDEX IF NOT EXISTS idx_eval_version ON evaluations(scoring_version, horizon, signal_ts);
+        `);
+        this.db.exec('PRAGMA user_version = 7');
+        this.db.exec('COMMIT');
+      } catch (err) {
+        this.db.exec('ROLLBACK');
+        throw err;
+      }
+    }
   }
 
   /**
@@ -310,9 +349,13 @@ export class SignalDatabase {
   }
 
   /** Lightweight evaluation rows for edge/conformal/drift math (no JSON columns). */
+  /** Rows behind the edge gate and conformal fit — current scoring epoch only. */
   getEvaluationRowsLite(): Array<{ horizon: Horizon; signal_ts: number; final_score: number; pct_change: number; actual_direction: 'up' | 'down' | 'flat'; correct: number; regime: string | null; band_method: string | null }> {
     return this.db
-      .prepare('SELECT horizon, signal_ts, final_score, pct_change, actual_direction, correct, regime, band_method FROM evaluations ORDER BY signal_ts ASC')
+      .prepare(
+        `SELECT horizon, signal_ts, final_score, pct_change, actual_direction, correct, regime, band_method
+         FROM evaluations WHERE COALESCE(scoring_version, 0) >= ${MIN_POOLABLE_VERSION} ORDER BY signal_ts ASC`,
+      )
       .all() as unknown as Array<{ horizon: Horizon; signal_ts: number; final_score: number; pct_change: number; actual_direction: 'up' | 'down' | 'flat'; correct: number; regime: string | null; band_method: string | null }>;
   }
 
@@ -506,8 +549,8 @@ export class SignalDatabase {
   insertSignal(signal: HorizonSignal): number {
     const result = this.db
       .prepare(
-        `INSERT INTO signals (ts, horizon, btc_price, polymarket_score, technical_score, etf_score, macro_score, liquidity_score, final_score, label, raw_label, confidence, reasons_json, risks_json, context_json)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        `INSERT INTO signals (ts, horizon, btc_price, polymarket_score, technical_score, etf_score, macro_score, liquidity_score, final_score, label, raw_label, confidence, reasons_json, risks_json, context_json, scoring_version)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       )
       .run(
         signal.timestamp,
@@ -525,6 +568,7 @@ export class SignalDatabase {
         JSON.stringify(signal.reasons),
         JSON.stringify(signal.risks),
         JSON.stringify(signal.context),
+        SCORING_VERSION,
       );
     return Number(result.lastInsertRowid);
   }
@@ -573,24 +617,46 @@ export class SignalDatabase {
         `INSERT OR IGNORE INTO evaluations
          (signal_id, horizon, signal_ts, evaluated_ts, entry_price, future_price, abs_change, pct_change,
           predicted_label, raw_label, actual_direction, correct, raw_correct, confidence, final_score, session, components_json,
-          band_pct, band_method, regime)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+          band_pct, band_method, regime, scoring_version)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
+                 COALESCE((SELECT s.scoring_version FROM signals s WHERE s.id = ?), ?))`,
       )
       .run(
         e.signal_id, e.horizon, e.signal_ts, e.evaluated_ts, e.entry_price, e.future_price,
         e.abs_change, e.pct_change, e.predicted_label, e.raw_label, e.actual_direction,
         e.correct, e.raw_correct, e.confidence, e.final_score, e.session, e.components_json,
         e.band_pct, e.band_method, e.regime,
+        // An evaluation belongs to the epoch of the signal it judges, not to whatever
+        // epoch is current when the evaluator finally reaches it.
+        e.signal_id, SCORING_VERSION,
       );
   }
 
-  getEvaluations(horizon?: Horizon): EvaluationRow[] {
+  /**
+   * Evaluations for reporting. By default this returns only epochs comparable with the
+   * current scoring version — rows from an earlier epoch answer a different question and
+   * must never be pooled into an accuracy or edge figure. Pass `{ allEpochs: true }` to
+   * read every row (exports, and the per-epoch breakdown that reports them separately).
+   */
+  getEvaluations(horizon?: Horizon, opts: { allEpochs?: boolean } = {}): EvaluationRow[] {
+    const epochClause = opts.allEpochs ? '' : ' AND COALESCE(scoring_version, 0) >= ' + MIN_POOLABLE_VERSION;
     if (horizon) {
       return this.db
-        .prepare('SELECT * FROM evaluations WHERE horizon = ? ORDER BY signal_ts ASC')
+        .prepare(`SELECT * FROM evaluations WHERE horizon = ?${epochClause} ORDER BY signal_ts ASC`)
         .all(horizon) as unknown as EvaluationRow[];
     }
-    return this.db.prepare('SELECT * FROM evaluations ORDER BY signal_ts ASC').all() as unknown as EvaluationRow[];
+    const where = opts.allEpochs ? '' : ` WHERE COALESCE(scoring_version, 0) >= ${MIN_POOLABLE_VERSION}`;
+    return this.db.prepare(`SELECT * FROM evaluations${where} ORDER BY signal_ts ASC`).all() as unknown as EvaluationRow[];
+  }
+
+  /** Row counts per scoring epoch, so an excluded epoch can be reported rather than hidden. */
+  evaluationsByEpoch(): Array<{ version: number | null; n: number; from: number | null; to: number | null }> {
+    return this.db
+      .prepare(
+        `SELECT scoring_version AS version, COUNT(*) AS n, MIN(signal_ts) AS "from", MAX(signal_ts) AS "to"
+         FROM evaluations GROUP BY scoring_version ORDER BY scoring_version ASC`,
+      )
+      .all() as unknown as Array<{ version: number | null; n: number; from: number | null; to: number | null }>;
   }
 
   countEvaluations(): number {
@@ -651,7 +717,7 @@ export class SignalDatabase {
 
   exportEvaluationRows(): Array<Record<string, unknown>> {
     return this.db
-      .prepare('SELECT id, signal_id, horizon, signal_ts, evaluated_ts, entry_price, future_price, abs_change, pct_change, predicted_label, raw_label, actual_direction, correct, raw_correct, confidence, final_score, session, band_pct, band_method, regime FROM evaluations ORDER BY signal_ts ASC')
+      .prepare('SELECT id, signal_id, horizon, signal_ts, evaluated_ts, entry_price, future_price, abs_change, pct_change, predicted_label, raw_label, actual_direction, correct, raw_correct, confidence, final_score, session, band_pct, band_method, regime, scoring_version FROM evaluations ORDER BY signal_ts ASC')
       .all() as unknown as Array<Record<string, unknown>>;
   }
 
@@ -738,10 +804,12 @@ export interface SignalRow {
   reasons_json: string;
   risks_json: string;
   context_json: string | null;
+  scoring_version: number | null;
 }
 
 export interface EvaluationRow extends StoredEvaluation {
   components_json: string;
+  scoring_version: number | null;
 }
 
 export interface AlertRow {
