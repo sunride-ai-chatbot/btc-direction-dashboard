@@ -421,7 +421,9 @@ Key judgment calls made while building the MVP, so they can be revisited deliber
     +22.20 → −21.19 at 2026-09-13T08:21:10.983Z, two minutes after commit 3e95516 — exactly
     the flip predicted when the fix was written. That instant is `PARSER_FIX_TS`, and the
     migration attributes 12,837 evaluations to v1 and 216 to v2 (verified by rehearsing the
-    migration against a copy of the live 220MB database: 161ms, nothing deleted).
+    migration against a copy of the live database: 161ms, nothing deleted). Note: the
+    database file is 73 MB; the 220 MB figure used earlier in this work was the volume's
+    total usage (database plus its snapshots), not the database itself.
 81. **v2 and v3 are pooled on evidence, not on assumption.** They differ only in the
     price-only technical branch, and that branch fired on 0 of the 548 signals written during
     v2 — the candle work in 2b10b5b/4cbaf85 had already restored indicator data — so v2 rows
