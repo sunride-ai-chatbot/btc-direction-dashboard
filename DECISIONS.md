@@ -480,7 +480,11 @@ Key judgment calls made while building the MVP, so they can be revisited deliber
     loses the database and all seven copies together. The only off-volume copy was a manual
     pull to iCloud, which requires a laptop to be awake and someone to remember. A backup
     with that dependency is not a backup.
-90. **The off-site job runs on GitHub Actions, not on a machine anyone owns.** Daily at
+90. **The off-site job runs on GitHub Actions, not on a machine anyone owns.** It lives in
+    the private `btc-direction-backups` repo, not here: this repo is public, and release
+    assets on a public repo are public downloads — the database is the project's accumulated
+    research and stays private. Keeping the job there also means the default `GITHUB_TOKEN`
+    can publish those releases, so no cross-repo PAT exists to leak. Daily at
     04:00 UTC — an hour after the app's own 03:00 UTC snapshot, so the freshest nightly is
     always on the volume by then. Chosen over a local scheduler (needs the laptop awake) and
     over object storage (needs a new account and credentials); the repo and its CI already
@@ -498,3 +502,9 @@ Key judgment calls made while building the MVP, so they can be revisited deliber
 93. **Known consequence: every push redeploys and takes a boot snapshot,** so a day with
     several pushes can fill the volume's 7 slots with deploy-time copies and evict the
     nightly ones. Acceptable now that the 30-deep off-site archive is the real depth.
+94. **Public code, private data.** The repository was made public on request. Verified first
+    that no secret was ever committed (clean tree, clean history, `BACKUP_TOKEN` never in
+    git, `.env.example` holds only defaults) — and that going public would have published
+    the database backups with it, which is why the backup job and its assets moved to a
+    private repo before the switch. GitHub Actions secrets stay private in a public repo,
+    but release assets do not.
