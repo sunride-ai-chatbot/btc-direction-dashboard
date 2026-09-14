@@ -26,7 +26,10 @@ permissions:
 
 env:
   API: https://btc-backend-production-f698.up.railway.app
-  KEEP_RELEASES: 14
+  GH_REPO: ${{ github.repository }}
+  # A snapshot compresses ~15x (75MB -> 5MB), so a month of daily restore points
+  # costs about 150MB. Cheap enough that depth is not worth economising on.
+  KEEP_RELEASES: 30
 
 jobs:
   backup:
@@ -74,7 +77,7 @@ jobs:
           # Guard against silent truncation: this archive must never hold fewer rows
           # than the last one we stored. Row counts only ever grow (pruning touches
           # raw inputs, never signals or evaluations).
-          PREV=$(gh release list --limit 1 --json body --jq '.[0].body // ""' 2>/dev/null | grep -oP 'signals=\K[0-9]+' || echo 0)
+          PREV=$(gh release list --repo "$GH_REPO" --limit 1 --json body --jq '.[0].body // ""' 2>/dev/null | grep -oP 'signals=\K[0-9]+' || echo 0)
           if [ "${PREV:-0}" -gt 0 ] && [ "$SIGNALS" -lt "$PREV" ]; then
             echo "::error::regression: $SIGNALS signals now vs $PREV in the previous backup"; exit 1
           fi
@@ -102,7 +105,7 @@ jobs:
         run: |
           set -euo pipefail
           TAG="backup-$(date -u +%Y-%m-%d-%H%M)"
-          gh release create "$TAG" "$NAME.gz" \
+          gh release create "$TAG" "$NAME.gz" --repo "$GH_REPO" \
             --title "Database backup $(date -u +%Y-%m-%d)" \
             --notes "Verified snapshot pulled from the Railway volume.
 
@@ -121,10 +124,10 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
-          gh release list --limit 200 --json tagName,createdAt \
+          gh release list --repo "$GH_REPO" --limit 200 --json tagName,createdAt \
             --jq '[.[] | select(.tagName | startswith("backup-"))] | sort_by(.createdAt) | reverse | .['"$KEEP_RELEASES"':] | .[].tagName' \
             | while read -r TAG; do
                 [ -n "$TAG" ] || continue
                 echo "pruning $TAG"
-                gh release delete "$TAG" --yes --cleanup-tag
+                gh release delete "$TAG" --repo "$GH_REPO" --yes --cleanup-tag
               done
