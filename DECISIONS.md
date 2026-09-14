@@ -472,3 +472,29 @@ Key judgment calls made while building the MVP, so they can be revisited deliber
     already excluded by the `btc_price IS NOT NULL` filter. No `evaluation_status` column was
     added — the gap between 14,268 signals and 13,065 evaluations is entirely signals whose
     horizon has not elapsed.
+
+## Phase 6g — off-site backup (2026-09-14)
+
+89. **Every backup lived on the thing it was backing up.** The app keeps seven snapshots,
+    and all seven sit on the same Railway volume as the live database — losing the volume
+    loses the database and all seven copies together. The only off-volume copy was a manual
+    pull to iCloud, which requires a laptop to be awake and someone to remember. A backup
+    with that dependency is not a backup.
+90. **The off-site job runs on GitHub Actions, not on a machine anyone owns.** Daily at
+    04:00 UTC — an hour after the app's own 03:00 UTC snapshot, so the freshest nightly is
+    always on the volume by then. Chosen over a local scheduler (needs the laptop awake) and
+    over object storage (needs a new account and credentials); the repo and its CI already
+    exist, and release assets carry the file without bloating git history.
+91. **The job verifies rather than archives.** It fails if the server reports a failed
+    backup (otherwise it would faithfully store a stale snapshot and call it fresh), checks
+    the download against the advertised size, opens the snapshot and runs
+    `PRAGMA integrity_check`, asserts schema >= v7 and a non-empty signals table, and refuses
+    to store fewer signals than the previous backup held — signal counts only ever grow, so a
+    drop means truncation. Verified end to end by restoring from the published asset: sha256
+    matched, integrity ok, 14,872 signals.
+92. **Depth is cheap because SQLite compresses ~15x.** 75 MB becomes 5 MB, so 30 daily
+    restore points cost ~150 MB of release assets. Retention was set from that measurement,
+    not from a guess.
+93. **Known consequence: every push redeploys and takes a boot snapshot,** so a day with
+    several pushes can fill the volume's 7 slots with deploy-time copies and evict the
+    nightly ones. Acceptable now that the 30-deep off-site archive is the real depth.
